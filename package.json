@@ -18,8 +18,9 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": ">=1.0.0",
-    "ajv": ">=8.0.0",
-    "ajv-formats": ">=3.0.0"
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "ajv": "^8.0.0",
+    "ajv-formats": "^3.0.0",
+    "better-sqlite3": "^12.9.0"
   }
 }
