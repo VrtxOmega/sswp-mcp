@@ -9,7 +9,8 @@
   },
   "scripts": {
     "start": "node dist/sswp-mcp.cjs",
-    "cli": "node dist/sswp.cjs"
+    "cli": "node dist/sswp.cjs",
+    "build": "echo 'dist/ pre-compiled — no build step required'"
   },
   "keywords": ["mcp", "ai", "veritas", "attestation", "witness", "deterministic-build", "sswp"],
   "author": "RJ <rj@veritas.engineering>",
