@@ -9,7 +9,7 @@
 ![Status](https://img.shields.io/badge/Status-ACTIVE-success?style=flat-square&labelColor=000000&color=d4af37)
 ![Version](https://img.shields.io/badge/Version-v2.0.1-blue?style=flat-square&labelColor=000000)
 ![Node](https://img.shields.io/badge/Node-18%2B-informational?style=flat-square&labelColor=000000)
-![License](https://img.shields.io/badge/License-VERITAS-black?style=flat-square&labelColor=000000)
+![License](https://img.shields.io/badge/License-MIT-green?style=flat-square&labelColor=000000)
 
 [![sswp-mcp MCP server](https://glama.ai/mcp/servers/VrtxOmega/sswp-mcp/badges/card.svg)](https://glama.ai/mcp/servers/VrtxOmega/sswp-mcp)
 
@@ -34,6 +34,7 @@ SSWP MCP is the attestation and witness layer of the **VERITAS & Sovereign Ecosy
 - [Features](#features)
 - [Architecture](#architecture)
 - [Requirements](#requirements)
+- [Installation](#installation)
 - [Quickstart](#quickstart)
 - [Configuration](#configuration)
 - [Tools Reference](#tools-reference-8-tools)
@@ -246,6 +247,36 @@ Verification later is one call: `sswp_verify` recomputes the SHA against the fil
 
 ---
 
+## Installation
+
+### Prerequisites
+
+Ensure Node.js v18+ and npm are installed:
+
+```bash
+node --version  # v18.0.0 or higher
+npm --version   # bundled with Node.js
+```
+
+### From Source
+
+```bash
+git clone https://github.com/VrtxOmega/sswp-mcp.git
+cd sswp-mcp
+npm install
+```
+
+The bundled CJS is pre-built in `dist/` — no TypeScript compilation required.
+
+### Verify
+
+```bash
+node dist/sswp.cjs witness --help
+# SSWP CLI v2.0.0 — ready
+```
+
+---
+
 ## Quickstart
 
 ```bash
@@ -384,7 +415,7 @@ SSWP MCP is one component of the **VERITAS Omega Universe** — a sovereign AI i
 
 ## License
 
-[VERITAS Software License](./LICENSE)
+[MIT License](./LICENSE)
 
 ---
 

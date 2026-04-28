@@ -13,7 +13,7 @@
   },
   "keywords": ["mcp", "ai", "veritas", "attestation", "witness", "deterministic-build", "sswp"],
   "author": "RJ <rj@veritas.engineering>",
-  "license": "VERITAS-SOFTWARE-LICENSE",
+  "license": "MIT",
   "engines": {
     "node": ">=18"
   },
