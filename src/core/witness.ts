@@ -2,7 +2,7 @@
 /** SSWP orchestrator — builds, seals, and attests */
 
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { seal } from '../../engine/sealer.js';
@@ -12,12 +12,27 @@ import { runAdversarialProbes } from './adversarial-probe.js';
 import type { SswpAttestation, BuildEnvironment } from './types.js';
 
 export async function witness(projectRoot: string): Promise<SswpAttestation> {
-  // Phase 1: Scan
-  const { entries, env, totalPackages, suspiciousCount } = await scanBuild(projectRoot);
+  // Phase 0: Detect project type (polyglot support)
+  const projectType = detectProjectType(projectRoot);
+  const projectName = resolveProjectName(projectRoot, projectType);
+
+  // Phase 1: Scan (skip dependency scan for non-Node static sites)
+  let entries: any[] = [];
+  let env: BuildEnvironment = { nodeVersion: process.version, os: process.platform, arch: process.arch, ci: !!process.env.CI, buildCommand: 'unknown' };
+  let totalPackages = 0;
+  let suspiciousCount = 0;
+
+  if (projectType !== 'html' && existsSync(join(projectRoot, 'package.json'))) {
+    const scan = await scanBuild(projectRoot);
+    entries = scan.entries;
+    env = scan.env;
+    totalPackages = scan.totalPackages;
+    suspiciousCount = scan.suspiciousCount;
+  }
 
   const scanSeal = seal(
-    { phase: 'SCAN', totalPackages, suspiciousCount },
-    `Scanned ${totalPackages} packages, ${suspiciousCount} flagged`
+    { phase: 'SCAN', totalPackages, suspiciousCount, projectType },
+    `Scanned ${totalPackages} packages, ${suspiciousCount} flagged (type: ${projectType})`
   );
 
   // Phase 2: Gates
@@ -29,8 +44,11 @@ export async function witness(projectRoot: string): Promise<SswpAttestation> {
     JSON.stringify(gateResults.map(g => ({ gate: g.gate, status: g.status })))
   );
 
-  // Phase 3: Adversarial
-  const adversarial = await runAdversarialProbes(entries);
+  // Phase 3: Adversarial (only for Node repos with deps)
+  let adversarial = { totalPackages: 0, suspiciousPackages: 0, probes: [], overallRisk: 0 };
+  if (entries.length > 0) {
+    adversarial = await runAdversarialProbes(entries);
+  }
 
   const advSeal = seal(
     { phase: 'ADVERSARIAL', overallRisk: adversarial.overallRisk, probes: adversarial.probes.length },
@@ -38,16 +56,15 @@ export async function witness(projectRoot: string): Promise<SswpAttestation> {
   );
 
   // Phase 4: Attest
-  const pkgJson = JSON.parse(readFileSync(join(projectRoot, 'package.json'), 'utf8'));
   const gitHash = execGit(projectRoot, ['rev-parse', 'HEAD']);
   const branch = execGit(projectRoot, ['rev-parse', '--abbrev-ref', 'HEAD']);
 
-  // Deterministic signature — exclude signature field from hash
   const attestation: SswpAttestation = {
-    version: '1.0.0',
+    version: '1.1.0',
     timestamp: new Date().toISOString(),
+    projectType,
     target: {
-      name: pkgJson.name || 'unknown',
+      name: projectName,
       repo: projectRoot,
       commitHash: gitHash || 'unknown',
       branch: branch || 'unknown',
@@ -77,6 +94,39 @@ export async function witness(projectRoot: string): Promise<SswpAttestation> {
   );
 
   return attestation;
+}
+
+// ── Polyglot helpers ──
+
+function detectProjectType(root: string): string {
+  if (existsSync(join(root, 'package.json'))) return 'node';
+  if (existsSync(join(root, 'requirements.txt')) || existsSync(join(root, 'pyproject.toml')) || existsSync(join(root, 'setup.py'))) return 'python';
+  if (existsSync(join(root, 'go.mod'))) return 'go';
+  if (existsSync(join(root, 'Cargo.toml'))) return 'rust';
+  if (existsSync(join(root, 'index.html'))) return 'html';
+  return 'unknown';
+}
+
+function resolveProjectName(root: string, projectType: string): string {
+  try {
+    if (projectType === 'node') {
+      const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+      return pkg.name || root.split('/').pop() || 'unknown';
+    }
+    if (projectType === 'python') {
+      if (existsSync(join(root, 'pyproject.toml'))) {
+        const toml = readFileSync(join(root, 'pyproject.toml'), 'utf8');
+        const match = toml.match(/name\s*=\s*"(.+)"/);
+        if (match) return match[1];
+      }
+    }
+    if (projectType === 'go') {
+      const gomod = readFileSync(join(root, 'go.mod'), 'utf8');
+      const match = gomod.match(/module\s+(.+)/);
+      if (match) return match[1].split('/').pop() || match[1];
+    }
+  } catch {}
+  return root.split('/').pop() || 'unknown';
 }
 
 function execGit(cwd: string, args: string[]): string {
