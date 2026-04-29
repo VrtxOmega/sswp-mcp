@@ -1,0 +1,172 @@
+{
+  "version": "1.0.0",
+  "timestamp": "2026-04-29T21:04:12.188Z",
+  "target": {
+    "name": "sswp-mcp",
+    "repo": "/mnt/c/Veritas_Lab/sswp-mcp",
+    "commitHash": "ed420c5c887cc711b2c443de6572d57afd6a2bf8",
+    "branch": "master"
+  },
+  "environment": {
+    "nodeVersion": "v22.14.0",
+    "os": "linux",
+    "arch": "x64",
+    "ci": false
+  },
+  "dependencies": [
+    {
+      "name": "@modelcontextprotocol/sdk",
+      "version": "1.0.0",
+      "resolved": "/mnt/c/Veritas_Lab/sswp-mcp/node_modules/@modelcontextprotocol/sdk",
+      "integrity": "7ab20eba8fee70f3",
+      "suspicious": false,
+      "riskScore": 0.1
+    },
+    {
+      "name": "ajv",
+      "version": "8.0.0",
+      "resolved": "/mnt/c/Veritas_Lab/sswp-mcp/node_modules/ajv",
+      "integrity": "1f9033ee5a6515e7",
+      "suspicious": false,
+      "riskScore": 0.1
+    },
+    {
+      "name": "ajv-formats",
+      "version": "3.0.0",
+      "resolved": "/mnt/c/Veritas_Lab/sswp-mcp/node_modules/ajv-formats",
+      "integrity": "402fb4bcfa457f02",
+      "suspicious": false,
+      "riskScore": 0.1
+    },
+    {
+      "name": "better-sqlite3",
+      "version": "12.9.0",
+      "resolved": "/mnt/c/Veritas_Lab/sswp-mcp/node_modules/better-sqlite3",
+      "integrity": "9d2524247288858c",
+      "suspicious": false,
+      "riskScore": 0.1
+    }
+  ],
+  "gates": [
+    {
+      "gate": "GIT_INTEGRITY",
+      "status": "PASS",
+      "evidence": "Working tree clean",
+      "durationMs": 67
+    },
+    {
+      "gate": "LOCKFILE",
+      "status": "PASS",
+      "evidence": "package-lock.json present",
+      "durationMs": 1
+    },
+    {
+      "gate": "DETERMINISTIC_BUILD",
+      "status": "PASS",
+      "evidence": "Build succeeded: npm run build",
+      "durationMs": 142
+    },
+    {
+      "gate": "TEST_PASS",
+      "status": "FAIL",
+      "evidence": "Tests failed: npm error Missing script: \"test\"\nnpm error\nnpm error To see a list of scripts, run:\nnpm error   npm run\nnpm error A complete log of this run can be found in: /home/veritas/.npm/_logs/2026-04-29T21_04_",
+      "durationMs": 83
+    },
+    {
+      "gate": "LINT",
+      "status": "PASS",
+      "evidence": "npx passed",
+      "durationMs": 2393
+    }
+  ],
+  "adversarial": {
+    "totalPackages": 4,
+    "suspiciousPackages": 0,
+    "probes": [
+      {
+        "package": "@modelcontextprotocol/sdk",
+        "probe": "TYPO_SQUATTING",
+        "result": "PASS",
+        "detail": "Name heuristic clean"
+      },
+      {
+        "package": "@modelcontextprotocol/sdk",
+        "probe": "VERSION_ANOMALY",
+        "result": "PASS",
+        "detail": "Pinned: 1.0.0"
+      },
+      {
+        "package": "@modelcontextprotocol/sdk",
+        "probe": "METADATA_INTEGRITY",
+        "result": "PASS",
+        "detail": "Hash: 7ab20eba8fee70f3"
+      },
+      {
+        "package": "ajv",
+        "probe": "TYPO_SQUATTING",
+        "result": "PASS",
+        "detail": "Name heuristic clean"
+      },
+      {
+        "package": "ajv",
+        "probe": "VERSION_ANOMALY",
+        "result": "PASS",
+        "detail": "Pinned: 8.0.0"
+      },
+      {
+        "package": "ajv",
+        "probe": "METADATA_INTEGRITY",
+        "result": "PASS",
+        "detail": "Hash: 1f9033ee5a6515e7"
+      },
+      {
+        "package": "ajv-formats",
+        "probe": "TYPO_SQUATTING",
+        "result": "PASS",
+        "detail": "Name heuristic clean"
+      },
+      {
+        "package": "ajv-formats",
+        "probe": "VERSION_ANOMALY",
+        "result": "PASS",
+        "detail": "Pinned: 3.0.0"
+      },
+      {
+        "package": "ajv-formats",
+        "probe": "METADATA_INTEGRITY",
+        "result": "PASS",
+        "detail": "Hash: 402fb4bcfa457f02"
+      },
+      {
+        "package": "better-sqlite3",
+        "probe": "TYPO_SQUATTING",
+        "result": "PASS",
+        "detail": "Name heuristic clean"
+      },
+      {
+        "package": "better-sqlite3",
+        "probe": "VERSION_ANOMALY",
+        "result": "PASS",
+        "detail": "Pinned: 12.9.0"
+      },
+      {
+        "package": "better-sqlite3",
+        "probe": "METADATA_INTEGRITY",
+        "result": "PASS",
+        "detail": "Hash: 9d2524247288858c"
+      },
+      {
+        "package": "system",
+        "probe": "KIMI_REASONING",
+        "result": "INCONCLUSIVE",
+        "detail": "OLLAMA_CLOUD_API_KEY is not set. Skipping Kimi adversarial analysis."
+      }
+    ],
+    "overallRisk": 0
+  },
+  "seal": {
+    "chainHash": "287216d9dfeeeb532578d6d436ba2175e00c79075c625737f95afda4fcfa31c5",
+    "sequence": 219
+  },
+  "signature": "88898aa334bd8230c0ffd1317578f1b0da5f8f9ad9f241583b51b0e0de9b0e71"
+}
