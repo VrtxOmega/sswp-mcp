@@ -23,33 +23,59 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: "sswp_witness",
-      description: "Run full SSWP witness on a project. Auto-saves to registry.",
+      description:
+        "Witness a software project with deterministic attestation. Scans the full dependency graph (every node_modules package with resolved path, integrity hash, and risk score), runs a 5-gate pipeline (GIT_INTEGRITY, LOCKFILE, DETERMINISTIC_BUILD, TEST_PASS, LINT), adversarially probes every dependency for typosquatting, version anomalies, and missing integrity hashes, then produces a self-verifying .sswp.json attestation sealed with SHA-256. Auto-saves the attestation to the SQLite fleet registry and appends an entry to the tamper-proof audit ledger. This is the primary attestation tool — use it when you need a full cryptographic witness of a single repo's state. For multiple repos, use sswp_bulk_witness instead.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      },
       inputSchema: {
         type: "object",
-        properties: { repoPath: { type: "string", description: "Project root path." } },
+        properties: { repoPath: { type: "string", description: "Absolute path to the project root directory containing package.json and node_modules. The tool resolves WSL/Windows path translations automatically." } },
         required: ["repoPath"]
       }
     },
     {
       name: "sswp_verify",
-      description: "Verify SHA-256 signature of a .sswp.json file.",
+      description:
+        "Verify the SHA-256 cryptographic signature of an existing .sswp.json attestation file. Recomputes the hash over the entire attestation payload (sorted keys, excluding the signature field) and compares it against the stored signature. Returns VALID ATTESTATION if the file is intact and unmodified, or SIGNATURE MISMATCH if the file was altered after sealing. Use this to audit an attestation you received from someone else, or to confirm a repo's attestation still matches the file on disk. For generating new attestations, use sswp_witness; for quick repo readiness checks without sealing, use sswp_check_repo.",
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      },
       inputSchema: {
         type: "object",
-        properties: { filePath: { type: "string", description: ".sswp.json path." } },
+        properties: { filePath: { type: "string", description: "Absolute path to the .sswp.json attestation file to verify. The file must contain a valid SSWP attestation with a 'signature' field." } },
         required: ["filePath"]
       }
     },
     {
       name: "sswp_analyze_deps",
-      description: "Send deps to Kimi for supply-chain risk analysis.",
+      description:
+        "Analyze a list of dependencies for supply-chain risk using Kimi K2 reasoning. Provide an array of {name, version} objects for any npm packages you want evaluated. The tool performs four analysis passes: typosquatting detection (matching names against known suspicious patterns like left-pad, event-stream), version anomaly scanning (flagging unpinned ranges like *, >=, ^0), metadata integrity checks (CRITICAL if a dependency lacks an integrity hash), and optional Kimi K2 deep reasoning (requires OLLAMA_CLOUD_API_KEY — returns INCONCLUSIVE without it). Returns a JSON object with per-probe results, overall risk score (0-1), and suspicious package counts. Use this for targeted supply-chain analysis on critical dependency trees. For generating full attestations that include probing, use sswp_witness.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true
+      },
       inputSchema: {
         type: "object",
         properties: {
           packages: {
             type: "array",
+            description: "Array of dependency objects to analyze. Each must include the package name and version string.",
             items: {
               type: "object",
-              properties: { name: { type: "string" }, version: { type: "string" } },
+              description: "A single dependency entry to analyze.",
+              properties: {
+                name: { type: "string", description: "The npm package name (e.g., 'better-sqlite3', '@modelcontextprotocol/sdk')." },
+                version: { type: "string", description: "The version string as it appears in package-lock.json (e.g., '12.9.0', '^1.0.0')." }
+              },
               required: ["name", "version"]
             }
           }
@@ -59,54 +85,89 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "sswp_bulk_witness",
-      description: "Run witness on multiple repos sequentially. Auto-saves each.",
+      description:
+        "Run deterministic attestation on multiple repositories sequentially. For each repo path provided, runs the full SSWP witness pipeline (scan, 5-gate test, adversarial probe, SHA-256 seal) and auto-saves the .sswp.json attestation to the fleet registry. Reports per-repo PASS/FAIL status with risk percentages and a final summary of passed, failed, and skipped counts. Missing repos are skipped by default. Use this for nightly fleet audits, pre-release sweeps across the ecosystem, or any batch witnessing operation. For a single repo, prefer sswp_witness.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      },
       inputSchema: {
         type: "object",
         properties: {
-          repoPaths: { type: "array", items: { type: "string" } },
-          skipMissing: { type: "boolean", default: true }
+          repoPaths: { type: "array", items: { type: "string" }, description: "Array of absolute paths to project root directories to witness. Each path must contain a package.json and node_modules." },
+          skipMissing: { type: "boolean", default: true, description: "If true (default), skip repos that don't exist on disk and continue processing remaining repos. If false, returns an error immediately on the first missing repo." }
         },
         required: ["repoPaths"]
       }
     },
     {
       name: "sswp_check_repo",
-      description: "Quick repo health check.",
+      description:
+        "Perform a lightweight repo health check without running the full witness pipeline. Verifies four conditions: the directory exists on disk, a .git directory is present (indicating a git repository), a package-lock.json exists (indicating locked dependencies), and a package.json exists (indicating a valid Node.js project). Returns a status line for each condition and an overall READY/NOT READY verdict. Use this as a fast pre-check in CI pipelines or before calling sswp_witness to ensure the repo is in a valid state. Does not seal an attestation or modify the registry.",
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      },
       inputSchema: {
         type: "object",
-        properties: { repoPath: { type: "string", description: "Project root path." } },
+        properties: { repoPath: { type: "string", description: "Absolute path to the project root directory to check. Must be a valid filesystem path." } },
         required: ["repoPath"]
       }
     },
     {
       name: "sswp_registry_health",
-      description: "Show SSWP registry health board for all nodes.",
+      description:
+        "Display the full fleet health board from the SSWP SQLite registry. Returns a formatted table showing every witnessed node with its name, status (active/deprecated/archived), last witness run timestamp, overall risk score (as percentage), and adversarial risk score (as percentage). Results are ordered by risk descending (most risky nodes first). Use this for an ecosystem-wide dashboard view of attestation status. For searching specific nodes by name, tag, or description, use sswp_node_search. For querying the audit ledger directly, use sswp_ledger.",
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      },
       inputSchema: {
         type: "object",
         properties: {
-          limit: { type: "number", description: "Max rows", default: 50 }
+          limit: { type: "number", description: "Maximum number of nodes to display in the health board. Defaults to 50 if not specified.", default: 50 }
         }
       }
     },
     {
       name: "sswp_ledger",
-      description: "Query the SSWP audit ledger.",
+      description:
+        "Query the tamper-proof SSWP audit ledger, an append-only SHA-256 hash chain that records every witness run, gate vote, and probe result. Returns a formatted table showing ledger entries with their sequence ID, event type (WITNESS, BULK_WITNESS), hash, and timestamp. Optionally filter by event type to narrow results. The ledger chain is cryptographically verifiable — any altered or removed entry breaks the chain. Use this for audit trail review, compliance reporting, or incident investigation. For a quick fleet overview, use sswp_registry_health instead.",
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      },
       inputSchema: {
         type: "object",
         properties: {
-          limit: { type: "number", description: "Entries to show", default: 20 },
-          eventType: { type: "string", description: "Filter by event type" }
+          limit: { type: "number", description: "Number of ledger entries to return, ordered newest first. Defaults to 20 if not specified.", default: 20 },
+          eventType: { type: "string", description: "Filter entries by event type. Common values: 'WITNESS' (single repo attestation), 'BULK_WITNESS' (batch run). Omit to return all event types." }
         }
       }
     },
     {
       name: "sswp_node_search",
-      description: "Search nodes in the SSWP registry by name/tag/description.",
+      description:
+        "Search the SSWP fleet registry using full-text search (FTS5) across node names, tags, and descriptions. Matches partial keywords and ranks results by relevance. Returns a formatted table showing matching nodes with their name, node type, status, and repository path. Use this to find specific projects in the ecosystem registry by name fragment, technology tag, or description keyword. For a full sorted health board of all nodes, use sswp_registry_health instead.",
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      },
       inputSchema: {
         type: "object",
         properties: {
-          query: { type: "string", description: "Search query" },
-          limit: { type: "number", description: "Max results", default: 10 }
+          query: { type: "string", description: "Search query string. Supports partial keyword matching across node names, tags, and descriptions. Example: 'anyio' or 'omega' or 'witness'." },
+          limit: { type: "number", description: "Maximum number of matching results to return, ordered by FTS5 relevance rank. Defaults to 10 if not specified.", default: 10 }
         },
         required: ["query"]
       }
