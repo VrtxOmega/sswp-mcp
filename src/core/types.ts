@@ -1,10 +1,11 @@
 // src/sswp/core/types.ts
-/** Sovereign Software Witness Protocol — Core Types */
+/** Sovereign Software Witness Protocol — Core Types (v1.1 polyglot) */
 
 export interface SswpAttestation {
   id?: string;
   version: string;
   timestamp: string;
+  projectType?: string; // node | python | go | rust | html | unknown
   target: {
     name: string;
     repo: string;
