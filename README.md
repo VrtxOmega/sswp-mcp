@@ -12,6 +12,7 @@
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square&labelColor=000000)
 
 [![sswp-mcp MCP server](https://glama.ai/mcp/servers/VrtxOmega/sswp-mcp/badges/card.svg)](https://glama.ai/mcp/servers/VrtxOmega/sswp-mcp)
+[![SafeSkill 88/100](https://img.shields.io/badge/SafeSkill-88%2F100_Passes%20with%20Notes-yellow)](https://safeskill.dev/scan/vrtxomega-sswp-mcp)
 
 </div>
 
