@@ -8,4 +8,4 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 export NODE_NO_WARNINGS=1
 
-exec node "${SCRIPT_DIR}/dist/sswp-mcp.cjs"
+exec node "${SCRIPT_DIR}/dist/sswp.cjs"

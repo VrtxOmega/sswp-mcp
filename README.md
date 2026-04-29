@@ -271,7 +271,7 @@ The bundled CJS is pre-built in `dist/` — no TypeScript compilation required.
 ### Verify
 
 ```bash
-node dist/sswp.cjs witness --help
+node dist/sswp-cli.cjs witness --help
 # SSWP CLI v2.0.0 — ready
 ```
 
@@ -292,11 +292,11 @@ npx tsx src/sswp/mcp/server.ts
 # (MCP server starts on stdio — ready for client connection)
 
 # Or use the bundled CJS (no TypeScript compilation needed)
-node dist/sswp-mcp.cjs
+node dist/sswp.cjs
 
 # CLI (no MCP required)
-node dist/sswp.cjs witness /path/to/your/repo
-node dist/sswp.cjs verify /path/to/your/repo/.sswp.json
+node dist/sswp-cli.cjs witness /path/to/your/repo
+node dist/sswp-cli.cjs verify /path/to/your/repo/.sswp.json
 ```
 
 ---
@@ -359,19 +359,19 @@ SSWP ships with a standalone CLI that does not require an MCP client:
 
 ```bash
 # Witness a single repo
-node dist/sswp.cjs witness /mnt/c/Veritas_Lab/veritas-topography-map
+node dist/sswp-cli.cjs witness /mnt/c/Veritas_Lab/veritas-topography-map
 
 # Verify an attestation
-node dist/sswp.cjs verify /mnt/c/Veritas_Lab/veritas-topography-map/.sswp.json
+node dist/sswp-cli.cjs verify /mnt/c/Veritas_Lab/veritas-topography-map/.sswp.json
 
 # Registry operations
-node dist/sswp.cjs registry list              # all nodes
-node dist/sswp.cjs registry health            # health board
-node dist/sswp.cjs registry risky 0.3         # nodes below 0.3 score
+node dist/sswp-cli.cjs registry list              # all nodes
+node dist/sswp-cli.cjs registry health            # health board
+node dist/sswp-cli.cjs registry risky 0.3         # nodes below 0.3 score
 
 # Ledger
-node dist/sswp.cjs registry ledger 20         # last 20 entries
-node dist/sswp.cjs registry verify-ledger     # chain integrity check
+node dist/sswp-cli.cjs registry ledger 20         # last 20 entries
+node dist/sswp-cli.cjs registry verify-ledger     # chain integrity check
 ```
 
 ---

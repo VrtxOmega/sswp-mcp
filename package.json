@@ -3,13 +3,13 @@
   "version": "2.0.0",
   "description": "Sovereign Software Witness Protocol — MCP Server. Deterministic attestation, adversarial probing, and tamper-proof sealing for the VERITAS ecosystem.",
   "type": "commonjs",
-  "main": "dist/sswp-mcp.cjs",
+  "main": "dist/sswp.cjs",
   "bin": {
-    "sswp": "dist/sswp-mcp.cjs"
+    "sswp-mcp": "dist/sswp.cjs"
   },
   "scripts": {
-    "start": "node dist/sswp-mcp.cjs",
-    "cli": "node dist/sswp.cjs",
+    "start": "node dist/sswp.cjs",
+    "cli": "node dist/sswp-cli.cjs",
     "build": "echo 'dist/ pre-compiled — no build step required'"
   },
   "keywords": ["mcp", "ai", "veritas", "attestation", "witness", "deterministic-build", "sswp"],

@@ -25,8 +25,8 @@ RUN pnpm config set store-dir /tmp/pnpm-store && \
     pnpm run build
 
 # Verify the MCP server loads
-RUN node -e "require('./dist/sswp-mcp.cjs')" 2>&1 || true
+RUN node -e "require('./dist/sswp.cjs')" 2>&1 || true
 
 EXPOSE 3000
 
-CMD ["node", "dist/sswp-mcp.cjs"]
+CMD ["node", "dist/sswp.cjs"]

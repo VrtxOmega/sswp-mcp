@@ -50,10 +50,10 @@ These editors discover MCP servers from the standard Claude/Cline config file. C
 SSWP ships with a standalone CLI — no MCP client required:
 
 ```bash
-node dist/sswp.cjs witness /path/to/repo
-node dist/sswp.cjs verify /path/to/repo/.sswp.json
-node dist/sswp.cjs registry health
-node dist/sswp.cjs registry ledger 20
+node dist/sswp-cli.cjs witness /path/to/repo
+node dist/sswp-cli.cjs verify /path/to/repo/.sswp.json
+node dist/sswp-cli.cjs registry health
+node dist/sswp-cli.cjs registry ledger 20
 ```
 
 ## Programmatic Access (Node.js)
@@ -61,7 +61,7 @@ node dist/sswp.cjs registry ledger 20
 ```javascript
 const { spawn } = require('child_process');
 
-const proc = spawn('node', ['dist/sswp-mcp.cjs'], {
+const proc = spawn("node", ["dist/sswp.cjs"], {
   stdio: ['pipe', 'pipe', 'pipe']
 });
 
