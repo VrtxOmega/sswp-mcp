@@ -57,6 +57,16 @@ function probeTyposquatting(dep: DependencyEntry): ProbeResult {
   
   const name = dep.name.toLowerCase();
   
+  // If the name IS a known high-value target, it's legitimate — skip analysis
+  if (highValueTargets.includes(name)) {
+    return {
+      package: dep.name,
+      probe: 'TYPO_SQUATTING',
+      result: 'PASS',
+      detail: 'Known legitimate package',
+    };
+  }
+
   // 1. Exact or substring match for known suspicious/compromised packages
   const suspiciousPatterns = [
     'crossenv', 'nodemail.js', 'flatmap-stream', 'peacenotwar', 'node-ipc',
@@ -73,8 +83,14 @@ function probeTyposquatting(dep: DependencyEntry): ProbeResult {
   }
 
   // 2. Levenshtein distance check against high-value targets
+  // Common legitimate suffixes that shouldn't trigger typosquatting warnings
+  const legitSuffixes = ['js', 'ts', 'core', 'cli', 'ui', 'lib', 'kit', 'app', 'api'];
+  
   for (const target of highValueTargets) {
-    if (name === target) continue; // Legitimate package
+    if (name === target) continue;
+    
+    // Skip legitimate variants: expressjs, nextjs, etc. ("target" + common suffix)
+    if (legitSuffixes.some(s => name === target + s)) continue;
     
     const distance = levenshteinDistance(name, target);
     // Distance of 1 or 2 is highly suspicious for short/medium names

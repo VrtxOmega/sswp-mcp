@@ -21203,6 +21203,14 @@ function probeTyposquatting(dep) {
     "typescript", "jest", "eslint", "prettier", "vite", "webpack", "next", "angular", "rxjs", "jquery"
   ];
   const name = dep.name.toLowerCase();
+  if (highValueTargets.includes(name)) {
+    return {
+      package: dep.name,
+      probe: "TYPO_SQUATTING",
+      result: "PASS",
+      detail: "Known legitimate package"
+    };
+  }
   const suspiciousPatterns = [
     "crossenv", "nodemail.js", "flatmap-stream", "peacenotwar", "node-ipc",
     "left-pad", "event-stream", "colors", "faker"
@@ -21217,6 +21225,8 @@ function probeTyposquatting(dep) {
   }
   for (const target of highValueTargets) {
     if (name === target) continue;
+    const legitSuffixes = ["js", "ts", "core", "cli", "ui", "lib", "kit", "app", "api"];
+    if (legitSuffixes.some((s) => name === target + s)) continue;
     const distance = levenshteinDistance(name, target);
     if (distance > 0 && distance <= 2 && name.length >= 4) {
       return {
