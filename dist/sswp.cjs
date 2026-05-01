@@ -21372,7 +21372,7 @@ var import_better_sqlite3 = __toESM(require("better-sqlite3"), 1);
 var import_node_crypto4 = require("node:crypto");
 var import_node_fs4 = require("node:fs");
 var import_node_path4 = require("node:path");
-var SCHEMA_PATH = (0, import_node_path4.resolve)(process.cwd(), "src/sswp/registry/schema.sql");
+var SCHEMA_PATH = (0, import_node_path4.resolve)(__dirname, "../src/sswp/registry/schema.sql");
 var DEFAULT_DB = (0, import_node_path4.resolve)(process.env.HOME ?? "/tmp", ".sswp_registry.sqlite");
 var RegistryManager = class {
   db;
