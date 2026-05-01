@@ -21179,25 +21179,59 @@ async function runAdversarialProbes(deps) {
     overallRisk
   };
 }
+function levenshteinDistance(a, b) {
+  const matrix = Array.from({ length: a.length + 1 }, () =>
+    new Array(b.length + 1).fill(0)
+  );
+  for (let i = 0; i <= a.length; i++) matrix[i][0] = i;
+  for (let j = 0; j <= b.length; j++) matrix[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(
+        matrix[i - 1][j] + 1,
+        matrix[i][j - 1] + 1,
+        matrix[i - 1][j - 1] + cost
+      );
+    }
+  }
+  return matrix[a.length][b.length];
+}
 function probeTyposquatting(dep) {
-  const suspiciousPatterns = [
-    "left-pad",
-    "event-stream",
-    "colors",
-    "faker",
-    "node-ipc",
-    "rc",
-    "ua-parser-js",
-    "coa",
-    "esbuild",
-    "discord.js"
+  const highValueTargets = [
+    "react", "vue", "lodash", "axios", "express", "moment", "chalk", "commander", "tslib", "dotenv",
+    "typescript", "jest", "eslint", "prettier", "vite", "webpack", "next", "angular", "rxjs", "jquery"
   ];
-  const isSuspicious = suspiciousPatterns.some((p) => dep.name.toLowerCase().includes(p));
+  const name = dep.name.toLowerCase();
+  const suspiciousPatterns = [
+    "crossenv", "nodemail.js", "flatmap-stream", "peacenotwar", "node-ipc",
+    "left-pad", "event-stream", "colors", "faker"
+  ];
+  if (suspiciousPatterns.some((p) => name.includes(p))) {
+    return {
+      package: dep.name,
+      probe: "TYPO_SQUATTING",
+      result: "CRITICAL",
+      detail: "Matches known malicious or compromised package pattern"
+    };
+  }
+  for (const target of highValueTargets) {
+    if (name === target) continue;
+    const distance = levenshteinDistance(name, target);
+    if (distance > 0 && distance <= 2 && name.length >= 4) {
+      return {
+        package: dep.name,
+        probe: "TYPO_SQUATTING",
+        result: "WARN",
+        detail: `Potential typosquatting of '${target}' (edit distance: ${distance})`
+      };
+    }
+  }
   return {
     package: dep.name,
     probe: "TYPO_SQUATTING",
-    result: isSuspicious ? "WARN" : "PASS",
-    detail: isSuspicious ? "Name matches known suspicious packages" : "Name heuristic clean"
+    result: "PASS",
+    detail: "Name heuristic clean"
   };
 }
 function probeVersionAnomaly(dep) {

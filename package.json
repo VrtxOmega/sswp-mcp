@@ -5,7 +5,8 @@
   "type": "commonjs",
   "main": "dist/sswp.cjs",
   "bin": {
-    "sswp-mcp": "dist/sswp.cjs"
+    "sswp": "dist/sswp.cjs",
+    "sswp-mcp": "dist/sswp-mcp.cjs"
   },
   "scripts": {
     "start": "node dist/sswp.cjs",
@@ -14,7 +15,7 @@
   },
   "keywords": ["mcp", "ai", "veritas", "attestation", "witness", "deterministic-build", "sswp"],
   "author": "RJ <rj@veritas.engineering>",
-  "license": "MIT",
+  "license": "VERITAS-SOFTWARE-LICENSE",
   "engines": {
     "node": ">=18"
   },
