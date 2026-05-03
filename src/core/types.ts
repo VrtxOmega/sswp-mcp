@@ -25,7 +25,14 @@ export interface SswpAttestation {
     chainHash: string;
     sequence: number;
   };
-  signature: string; // sha256 of attestation JSON
+  /** Gap #4: VERITAS cross-system correlation ID (VT-YYYYMMDD-xxxxxxxx) */
+  traceId?: string;
+  /** Gap #3: Cortex governance state at time of witness */
+  governance?: {
+    cortexVerdict: 'APPROVED' | 'STEERED' | 'NOT_CHECKED';
+    cortexGoverned: boolean;
+  };
+  signature: string; // sha256 of attestation JSON (excludes signature field itself)
 }
 
 export interface DependencyEntry {

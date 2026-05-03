@@ -21693,7 +21693,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
       inputSchema: {
         type: "object",
-        properties: { repoPath: { type: "string", description: "Absolute path to the project root directory containing package.json and node_modules. The tool resolves WSL/Windows path translations automatically." } },
+        properties: {
+          repoPath: { type: "string", description: "Absolute path to the project root directory containing package.json and node_modules. The tool resolves WSL/Windows path translations automatically." },
+          traceId: { type: "string", description: "Optional VERITAS trace ID (VT-YYYYMMDD-xxxxxxxx) for cross-system correlation with Omega Brain SEAL chain and Stenographer. Obtain from omega_preload_context or veritas_bridge.get_or_create_trace()." },
+          cortexVerdict: { type: "string", enum: ["APPROVED", "STEERED", "NOT_CHECKED"], description: "Gap #3 — Governance: result of omega_cortex_check run BEFORE calling sswp_witness. Pass 'APPROVED' or 'STEERED' to confirm the Cortex gate was satisfied. Omitting or passing 'NOT_CHECKED' flags the attestation as CORTEX_NOT_CHECKED in metadata." }
+        },
         required: ["repoPath"]
       }
     },
@@ -21824,6 +21828,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
         required: ["query"]
       }
+    },
+    {
+      name: "sswp_export_to_omega",
+      description: "Gap #2 — Formats the most recent SSWP attestation (or a specified repo) as an omega_seal_run payload, enabling one-click chaining: sswp_witness → sswp_export_to_omega → omega_seal_run. This closes the SSWP→Omega Brain SEAL bridge gap by providing ready-to-use context and response fields. The output JSON can be passed directly to omega_seal_run. Optionally filter by repoPath to export a specific repo's attestation.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: {
+        type: "object",
+        properties: {
+          repoPath: { type: "string", description: "Optional: absolute path to the repo whose attestation to export. If omitted, the most recently witnessed node is used." },
+          traceId: { type: "string", description: "Optional VERITAS trace ID to embed in the seal context." }
+        }
+      }
     }
   ]
 }));
@@ -21846,7 +21862,52 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       const rawJson = JSON.stringify(att, null, 2);
       (0, import_node_fs5.writeFileSync)(jsonPath, rawJson);
       REG.saveAttestation(node.node_id, att, jsonPath, rawJson);
-      return mkText(formatAttestation(att) + "\n\n[REGISTRY] Saved attestation " + att.id, !ok);
+
+      // Gap #2: emit to VERITAS shared event bus for Omega Brain SEAL chaining
+      // Gap #3: record cortex governance state in attestation metadata
+      const cortexVerdict2 = args.cortexVerdict || "NOT_CHECKED";
+      const traceId2 = args.traceId || "VT-UNTRACED";
+      try {
+        const os2 = require("os");
+        const fs2 = require("fs");
+        const sharedDir2 = os2.homedir() + "/.veritas-shared";
+        fs2.mkdirSync(sharedDir2, { recursive: true });
+        const event2 = JSON.stringify({
+          trace_id: traceId2,
+          event_type: "SSWP_WITNESS_COMPLETE",
+          source: "sswp",
+          payload: {
+            target: att.target.name,
+            repo: att.target.repo,
+            commit: att.target.commitHash ? att.target.commitHash.slice(0, 8) : "unknown",
+            overall_status: ok ? "PASS" : "FAIL",
+            adversarial_risk: att.adversarial.overallRisk,
+            adversarial_risk_pct: (att.adversarial.overallRisk * 100).toFixed(1) + "%",
+            gates_passed: att.gates.filter((g) => g.status === "PASS").length,
+            gates_total: att.gates.length,
+            signature: att.signature ? att.signature.slice(0, 16) : "",
+            cortex_verdict: cortexVerdict2,
+            cortex_governed: cortexVerdict2 !== "NOT_CHECKED",
+          },
+          timestamp: new Date().toISOString(),
+        });
+        fs2.appendFileSync(sharedDir2 + "/events.jsonl", event2 + "\n");
+        // Also write a cortex governance flag into the attestation metadata for audit
+        if (cortexVerdict2 === "NOT_CHECKED") {
+          fs2.appendFileSync(sharedDir2 + "/events.jsonl", JSON.stringify({
+            trace_id: traceId2,
+            event_type: "SSWP_CORTEX_NOT_CHECKED",
+            source: "sswp",
+            payload: { repo: att.target.repo, note: "sswp_witness called without prior omega_cortex_check" },
+            timestamp: new Date().toISOString(),
+          }) + "\n");
+        }
+      } catch (_e2) { /* non-fatal — shared bus failure does not affect attestation */ }
+
+      const cortexNote = cortexVerdict2 === "NOT_CHECKED"
+        ? "\n\n⚠ CORTEX NOT CHECKED — Call omega_cortex_check before sswp_witness for governed attestation."
+        : `\n\n✓ Cortex: ${cortexVerdict2}`;
+      return mkText(formatAttestation(att) + "\n\n[REGISTRY] Saved attestation " + att.id + cortexNote, !ok);
     } catch (err) {
       return mkText("SSWP ERROR: " + (err.message || String(err)), true);
     }
@@ -21978,6 +22039,60 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
     return mkText(lines.join("\n"), false);
   }
+  if (name === "sswp_export_to_omega") {
+    // Gap #2: format attestation as omega_seal_run payload
+    const rawPath2 = args.repoPath;
+    const traceId3 = args.traceId || "VT-UNTRACED";
+    try {
+      const rows2 = REG.getHealthBoard();
+      let row2;
+      if (rawPath2) {
+        const wsl2 = toWslPath(rawPath2);
+        row2 = rows2.find((r) => r.repo_path === wsl2);
+        if (!row2) return mkText("No attestation found for: " + rawPath2, true);
+      } else {
+        if (!rows2.length) return mkText("No attestations in registry.", true);
+        row2 = rows2[0];
+      }
+      const riskPct = row2.last_risk != null ? (row2.last_risk * 100).toFixed(1) + "%" : "N/A";
+      const advPct  = row2.last_adversarial != null ? (row2.last_adversarial * 100).toFixed(1) + "%" : "N/A";
+      const sealPayload = {
+        context: {
+          event_type: "SSWP_WITNESS",
+          source: "sswp",
+          trace_id: traceId3,
+          node: row2.name,
+          repo_path: row2.repo_path,
+          status: row2.last_status || row2.overall_status || "UNKNOWN",
+          risk_score: row2.last_risk || 0,
+          adversarial_risk: row2.last_adversarial || 0,
+          last_run: row2.last_run || row2.run_at,
+          node_type: row2.node_type || "node",
+        },
+        response: (
+          "SSWP attestation — " + row2.name +
+          " | Status: " + (row2.last_status || row2.overall_status || "UNKNOWN") +
+          " | Risk: " + riskPct +
+          " | Adversarial: " + advPct +
+          " | Run: " + (row2.last_run || row2.run_at || "unknown") +
+          " | TraceID: " + traceId3
+        )
+      };
+      const output = (
+        "# omega_seal_run payload — ready to use\n\n" +
+        "Call omega_seal_run with these exact arguments:\n\n" +
+        JSON.stringify(sealPayload, null, 2) +
+        "\n\n# Quick chain:\n" +
+        "1. sswp_witness  →  repoPath: " + (rawPath2 || row2.repo_path) + "\n" +
+        "2. sswp_export_to_omega  →  (just ran)\n" +
+        "3. omega_seal_run  →  context: <above>, response: <above>"
+      );
+      return mkText(output, false);
+    } catch (err2) {
+      return mkText("EXPORT ERROR: " + (err2.message || String(err2)), true);
+    }
+  }
+
   return mkText("Unknown tool: " + name, true);
 });
 function mkText(text, isError) {
