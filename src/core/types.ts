@@ -20,6 +20,8 @@ export interface SswpAttestation {
   };
   dependencies: DependencyEntry[];
   gates: GateResult[];
+  /** Computed overall status: PASS (no FAILs, no INCONCLUSIVE), WARN (no FAILs, some INCONCLUSIVE), FAIL (any FAIL) */
+  overallStatus?: 'PASS' | 'WARN' | 'FAIL';
   adversarial: AdversarialReport;
   seal: {
     chainHash: string;
@@ -46,7 +48,7 @@ export interface DependencyEntry {
 
 export interface GateResult {
   gate: string;
-  status: 'PASS' | 'FAIL' | 'INCONCLUSIVE';
+  status: 'PASS' | 'FAIL' | 'INCONCLUSIVE' | 'WARN';
   evidence: string;
   durationMs: number;
 }

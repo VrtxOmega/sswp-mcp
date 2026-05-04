@@ -5,13 +5,14 @@ import { createHash } from 'node:crypto';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { seal } from '../../engine/sealer.js';
+import { seal } from '../engine/sealer.js';
 import { scanBuild } from './build-scanner.js';
 import { runGates } from './gate-runner.js';
+export type { Regime } from './gate-runner.js';
 import { runAdversarialProbes } from './adversarial-probe.js';
 import type { SswpAttestation, BuildEnvironment } from './types.js';
 
-export async function witness(projectRoot: string): Promise<SswpAttestation> {
+export async function witness(projectRoot: string, regime: import('./gate-runner.js').Regime = 'developer'): Promise<SswpAttestation> {
   // Phase 0: Detect project type (polyglot support)
   const projectType = detectProjectType(projectRoot);
   const projectName = resolveProjectName(projectRoot, projectType);
@@ -36,7 +37,7 @@ export async function witness(projectRoot: string): Promise<SswpAttestation> {
   );
 
   // Phase 2: Gates
-  const gateResults = await runGates(projectRoot, env);
+  const gateResults = await runGates(projectRoot, env, regime);
   const passedGates = gateResults.filter(g => g.status === 'PASS').length;
 
   const gateSeal = seal(
@@ -59,7 +60,13 @@ export async function witness(projectRoot: string): Promise<SswpAttestation> {
   const gitHash = execGit(projectRoot, ['rev-parse', 'HEAD']);
   const branch = execGit(projectRoot, ['rev-parse', '--abbrev-ref', 'HEAD']);
 
+  // Compute overallStatus — FAIL if any gate FAILed, WARN if INCONCLUSIVE present, PASS otherwise
+  const overallStatus: 'PASS' | 'WARN' | 'FAIL' = gateResults.some(g => g.status === 'FAIL') ? 'FAIL'
+    : gateResults.some(g => g.status === 'INCONCLUSIVE' || g.status === 'WARN') ? 'WARN'
+    : 'PASS';
+
   const attestation: SswpAttestation = {
+    overallStatus,
     version: '1.1.0',
     timestamp: new Date().toISOString(),
     projectType,
@@ -140,6 +147,8 @@ export function formatAttestation(att: SswpAttestation): string {
   lines.push(`   Target: ${att.target.name} (${att.target.commitHash.slice(0, 8)})`);
   lines.push(`   Branch: ${att.target.branch} | Env: ${att.environment.os}-${att.environment.arch}`);
   lines.push(`   Built: ${att.timestamp}`);
+  const ovIcon = att.overallStatus === 'PASS' ? '✓' : att.overallStatus === 'WARN' ? '⚠' : '✗';
+  lines.push(`   Overall: ${ovIcon} ${att.overallStatus || 'UNKNOWN'}`);
   lines.push('');
   lines.push('   GATES:');
   for (const g of att.gates) {

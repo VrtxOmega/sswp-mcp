@@ -36,7 +36,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           repoPath: { type: "string", description: "Absolute path to the project root directory containing package.json and node_modules. The tool resolves WSL/Windows path translations automatically." },
           traceId: { type: "string", description: "Optional VERITAS trace ID (VT-YYYYMMDD-xxxxxxxx) for cross-system correlation with Omega Brain SEAL chain and Stenographer." },
-          cortexVerdict: { type: "string", enum: ["APPROVED", "STEERED", "NOT_CHECKED"], description: "Gap #3 — Governance: result of omega_cortex_check run BEFORE calling sswp_witness. Pass 'APPROVED' or 'STEERED' to confirm the Cortex gate was satisfied." }
+          cortexVerdict: { type: "string", enum: ["APPROVED", "STEERED", "NOT_CHECKED"], description: "Gap #3 — Governance: result of omega_cortex_check run BEFORE calling sswp_witness. Pass 'APPROVED' or 'STEERED' to confirm the Cortex gate was satisfied." },
+          regime: { type: "string", enum: ["developer", "ci", "strict"], default: "developer", description: "Gate severity regime. developer: dirty tree=WARN, missing scripts=INCONCLUSIVE. ci: dirty tree=FAIL, build/test required if scripts exist. strict: all detectable gates must PASS." }
         },
         required: ["repoPath"]
       }
@@ -101,7 +102,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         type: "object",
         properties: {
           repoPaths: { type: "array", items: { type: "string" }, description: "Array of absolute paths to project root directories to witness. Each path must contain a package.json and node_modules." },
-          skipMissing: { type: "boolean", default: true, description: "If true (default), skip repos that don't exist on disk and continue processing remaining repos. If false, returns an error immediately on the first missing repo." }
+          skipMissing: { type: "boolean", default: true, description: "If true (default), skip repos that don't exist on disk and continue processing remaining repos. If false, returns an error immediately on the first missing repo." },
+          regime: { type: "string", enum: ["developer", "ci", "strict"], default: "developer", description: "Gate severity regime applied uniformly to all repos in the batch." }
         },
         required: ["repoPaths"]
       }
@@ -201,8 +203,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       return mkText("Repo not found: " + wslPath + " (from " + rawPath + ")", true);
     }
     try {
-      const att = await witness(wslPath);
-      const ok = att.gates.every(g => g.status === "PASS");
+      const regime = ((args as any).regime as string) || "developer";
+      const att = await witness(wslPath, regime as any);
+      // New PASS criterion: FAIL if any gate FAILed, WARN if INCONCLUSIVE/WARN present, PASS otherwise
+      const overallStatus = att.overallStatus || (att.gates.some(g => g.status === "FAIL") ? "FAIL"
+        : att.gates.some(g => g.status === "INCONCLUSIVE" || g.status === "WARN") ? "WARN"
+        : "PASS");
+      const ok = overallStatus !== "FAIL";
 
       // Auto-save to registry
       let node = REG.getNodeByPath(wslPath);
@@ -231,7 +238,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
             target: att.target.name,
             repo: att.target.repo,
             commit: att.target.commitHash?.slice(0, 8) || "unknown",
-            overall_status: ok ? "PASS" : "FAIL",
+            overall_status: overallStatus,
             adversarial_risk: att.adversarial.overallRisk,
             gates_passed: att.gates.filter(g => g.status === "PASS").length,
             gates_total: att.gates.length,
@@ -298,8 +305,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (name === "sswp_bulk_witness") {
     const paths = (args as any).repoPaths as string[];
     const skipMissing = (args as any).skipMissing !== false;
+    const regime = ((args as any).regime as string) || "developer";
     const results: string[] = [];
-    let pass = 0, fail = 0, skip = 0;
+    let pass = 0, warn = 0, fail = 0, skip = 0;
     for (const raw of paths) {
       const wsl = toWslPath(raw);
       if (!existsSync(wsl)) {
@@ -307,9 +315,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         return mkText("Missing repo (skipMissing=false): " + raw, true);
       }
       try {
-        const att = await witness(wsl);
-        const ok = att.gates.every(g => g.status === "PASS");
-        if (ok) pass++; else fail++;
+        const att = await witness(wsl, regime as any);
+        const overallStatus = att.overallStatus || (att.gates.some(g => g.status === "FAIL") ? "FAIL"
+          : att.gates.some(g => g.status === "INCONCLUSIVE" || g.status === "WARN") ? "WARN"
+          : "PASS");
+        if (overallStatus === "PASS") pass++;
+        else if (overallStatus === "WARN") warn++;
+        else fail++;
 
         // Auto-save each
         let node = REG.getNodeByPath(wsl);
@@ -319,13 +331,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         writeFileSync(jsonPath, rawJson);
         REG.saveAttestation(node.node_id, att, jsonPath, rawJson);
 
-        results.push("[" + (ok ? "PASS" : "FAIL") + "] " + raw + " - risk " + (att.adversarial.overallRisk * 100).toFixed(1) + "%");
+        results.push("[" + overallStatus + "] " + raw + " - risk " + (att.adversarial.overallRisk * 100).toFixed(1) + "%");
       } catch (err: any) {
         fail++;
         results.push("[ERROR] " + raw + ": " + err.message);
       }
     }
-    const summary = "BULK DONE - " + pass + " passed, " + fail + " failed, " + skip + " skipped / " + paths.length + "\n\n" + results.join("\n");
+    const summary = "BULK DONE - " + pass + " pass, " + warn + " warn, " + fail + " fail, " + skip + " skip / " + paths.length + "\n\n" + results.join("\n");
     return mkText(summary, fail > 0);
   }
 
