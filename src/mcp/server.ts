@@ -33,7 +33,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
       inputSchema: {
         type: "object",
-        properties: { repoPath: { type: "string", description: "Absolute path to the project root directory containing package.json and node_modules. The tool resolves WSL/Windows path translations automatically." } },
+        properties: {
+          repoPath: { type: "string", description: "Absolute path to the project root directory containing package.json and node_modules. The tool resolves WSL/Windows path translations automatically." },
+          traceId: { type: "string", description: "Optional VERITAS trace ID (VT-YYYYMMDD-xxxxxxxx) for cross-system correlation with Omega Brain SEAL chain and Stenographer." },
+          cortexVerdict: { type: "string", enum: ["APPROVED", "STEERED", "NOT_CHECKED"], description: "Gap #3 — Governance: result of omega_cortex_check run BEFORE calling sswp_witness. Pass 'APPROVED' or 'STEERED' to confirm the Cortex gate was satisfied." },
+          regime: { type: "string", enum: ["developer", "ci", "strict"], default: "developer", description: "Gate severity regime. developer: dirty tree=WARN, missing scripts=INCONCLUSIVE. ci: dirty tree=FAIL, build/test required if scripts exist. strict: all detectable gates must PASS." }
+        },
         required: ["repoPath"]
       }
     },
@@ -97,7 +102,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         type: "object",
         properties: {
           repoPaths: { type: "array", items: { type: "string" }, description: "Array of absolute paths to project root directories to witness. Each path must contain a package.json and node_modules." },
-          skipMissing: { type: "boolean", default: true, description: "If true (default), skip repos that don't exist on disk and continue processing remaining repos. If false, returns an error immediately on the first missing repo." }
+          skipMissing: { type: "boolean", default: true, description: "If true (default), skip repos that don't exist on disk and continue processing remaining repos. If false, returns an error immediately on the first missing repo." },
+          regime: { type: "string", enum: ["developer", "ci", "strict"], default: "developer", description: "Gate severity regime applied uniformly to all repos in the batch." }
         },
         required: ["repoPaths"]
       }
@@ -171,6 +177,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
         required: ["query"]
       }
+    },
+    {
+      name: "sswp_export_to_omega",
+      description: "Gap #2 — Formats the most recent SSWP attestation as an omega_seal_run payload, closing the SSWP→Omega Brain SEAL bridge gap. Enables one-click chaining: sswp_witness → sswp_export_to_omega → omega_seal_run. Returns ready-to-use context and response fields.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: {
+        type: "object",
+        properties: {
+          repoPath: { type: "string", description: "Optional: path to the repo whose attestation to export. Defaults to most recently witnessed node." },
+          traceId: { type: "string", description: "Optional VERITAS trace ID to embed in the seal context." }
+        }
+      }
     }
   ]
 }));
@@ -185,8 +203,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       return mkText("Repo not found: " + wslPath + " (from " + rawPath + ")", true);
     }
     try {
-      const att = await witness(wslPath);
-      const ok = att.gates.every(g => g.status === "PASS");
+      const regime = ((args as any).regime as string) || "developer";
+      const att = await witness(wslPath, regime as any);
+      // New PASS criterion: FAIL if any gate FAILed, WARN if INCONCLUSIVE/WARN present, PASS otherwise
+      const overallStatus = att.overallStatus || (att.gates.some(g => g.status === "FAIL") ? "FAIL"
+        : att.gates.some(g => g.status === "INCONCLUSIVE" || g.status === "WARN") ? "WARN"
+        : "PASS");
+      const ok = overallStatus !== "FAIL";
 
       // Auto-save to registry
       let node = REG.getNodeByPath(wslPath);
@@ -198,7 +221,47 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       writeFileSync(jsonPath, rawJson);
       REG.saveAttestation(node.node_id, att, jsonPath, rawJson);
 
-      return mkText(formatAttestation(att) + "\n\n[REGISTRY] Saved attestation " + att.id, !ok);
+      // Gap #2: emit to VERITAS shared event bus for Omega Brain SEAL chaining
+      // Gap #3: record cortex governance state
+      const cortexVerdict = (args as any).cortexVerdict as string || "NOT_CHECKED";
+      const traceId = (args as any).traceId as string || "VT-UNTRACED";
+      try {
+        const os = await import("node:os");
+        const { mkdirSync, appendFileSync } = await import("node:fs");
+        const sharedDir = os.homedir() + "/.veritas-shared";
+        mkdirSync(sharedDir, { recursive: true });
+        const event = JSON.stringify({
+          trace_id: traceId,
+          event_type: "SSWP_WITNESS_COMPLETE",
+          source: "sswp",
+          payload: {
+            target: att.target.name,
+            repo: att.target.repo,
+            commit: att.target.commitHash?.slice(0, 8) || "unknown",
+            overall_status: overallStatus,
+            adversarial_risk: att.adversarial.overallRisk,
+            gates_passed: att.gates.filter(g => g.status === "PASS").length,
+            gates_total: att.gates.length,
+            signature: att.signature?.slice(0, 16),
+            cortex_verdict: cortexVerdict,
+            cortex_governed: cortexVerdict !== "NOT_CHECKED",
+          },
+          timestamp: new Date().toISOString(),
+        });
+        appendFileSync(sharedDir + "/events.jsonl", event + "\n");
+        if (cortexVerdict === "NOT_CHECKED") {
+          appendFileSync(sharedDir + "/events.jsonl", JSON.stringify({
+            trace_id: traceId, event_type: "SSWP_CORTEX_NOT_CHECKED", source: "sswp",
+            payload: { repo: att.target.repo, note: "sswp_witness called without prior omega_cortex_check" },
+            timestamp: new Date().toISOString(),
+          }) + "\n");
+        }
+      } catch (_e) { /* non-fatal */ }
+
+      const cortexNote = cortexVerdict === "NOT_CHECKED"
+        ? "\n\n⚠ CORTEX NOT CHECKED — Call omega_cortex_check before sswp_witness for governed attestation."
+        : `\n\n✓ Cortex: ${cortexVerdict}`;
+      return mkText(formatAttestation(att) + "\n\n[REGISTRY] Saved attestation " + att.id + cortexNote, !ok);
     } catch (err: any) {
       return mkText("SSWP ERROR: " + (err.message || String(err)), true);
     }
@@ -242,8 +305,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (name === "sswp_bulk_witness") {
     const paths = (args as any).repoPaths as string[];
     const skipMissing = (args as any).skipMissing !== false;
+    const regime = ((args as any).regime as string) || "developer";
     const results: string[] = [];
-    let pass = 0, fail = 0, skip = 0;
+    let pass = 0, warn = 0, fail = 0, skip = 0;
     for (const raw of paths) {
       const wsl = toWslPath(raw);
       if (!existsSync(wsl)) {
@@ -251,9 +315,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         return mkText("Missing repo (skipMissing=false): " + raw, true);
       }
       try {
-        const att = await witness(wsl);
-        const ok = att.gates.every(g => g.status === "PASS");
-        if (ok) pass++; else fail++;
+        const att = await witness(wsl, regime as any);
+        const overallStatus = att.overallStatus || (att.gates.some(g => g.status === "FAIL") ? "FAIL"
+          : att.gates.some(g => g.status === "INCONCLUSIVE" || g.status === "WARN") ? "WARN"
+          : "PASS");
+        if (overallStatus === "PASS") pass++;
+        else if (overallStatus === "WARN") warn++;
+        else fail++;
 
         // Auto-save each
         let node = REG.getNodeByPath(wsl);
@@ -263,13 +331,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         writeFileSync(jsonPath, rawJson);
         REG.saveAttestation(node.node_id, att, jsonPath, rawJson);
 
-        results.push("[" + (ok ? "PASS" : "FAIL") + "] " + raw + " - risk " + (att.adversarial.overallRisk * 100).toFixed(1) + "%");
+        results.push("[" + overallStatus + "] " + raw + " - risk " + (att.adversarial.overallRisk * 100).toFixed(1) + "%");
       } catch (err: any) {
         fail++;
         results.push("[ERROR] " + raw + ": " + err.message);
       }
     }
-    const summary = "BULK DONE - " + pass + " passed, " + fail + " failed, " + skip + " skipped / " + paths.length + "\n\n" + results.join("\n");
+    const summary = "BULK DONE - " + pass + " pass, " + warn + " warn, " + fail + " fail, " + skip + " skip / " + paths.length + "\n\n" + results.join("\n");
     return mkText(summary, fail > 0);
   }
 
@@ -339,6 +407,44 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       lines.push(`${name}  ${type}  ${status}  ${r.repo_path}`);
     }
     return mkText(lines.join("\n"), false);
+  }
+
+  if (name === "sswp_export_to_omega") {
+    // Gap #2: format attestation as omega_seal_run payload
+    const rawPath2 = (args as any).repoPath as string | undefined;
+    const traceId2 = (args as any).traceId as string || "VT-UNTRACED";
+    try {
+      const rows = REG.getHealthBoard();
+      let row: any;
+      if (rawPath2) {
+        const wsl2 = toWslPath(rawPath2);
+        row = rows.find((r: any) => r.repo_path === wsl2);
+        if (!row) return mkText("No attestation found for: " + rawPath2, true);
+      } else {
+        if (!rows.length) return mkText("No attestations in registry.", true);
+        row = rows[0];
+      }
+      const riskPct = row.last_risk != null ? (row.last_risk * 100).toFixed(1) + "%" : "N/A";
+      const advPct  = row.last_adversarial != null ? (row.last_adversarial * 100).toFixed(1) + "%" : "N/A";
+      const sealPayload = {
+        context: {
+          event_type: "SSWP_WITNESS", source: "sswp", trace_id: traceId2,
+          node: row.name, repo_path: row.repo_path,
+          status: row.last_status || "UNKNOWN",
+          risk_score: row.last_risk || 0,
+          adversarial_risk: row.last_adversarial || 0,
+          last_run: row.last_run,
+        },
+        response: `SSWP attestation — ${row.name} | Status: ${row.last_status || "UNKNOWN"} | Risk: ${riskPct} | Adversarial: ${advPct} | Run: ${row.last_run || "unknown"} | TraceID: ${traceId2}`
+      };
+      return mkText(
+        "# omega_seal_run payload — ready to use\n\n" +
+        "Call omega_seal_run with these arguments:\n\n" +
+        JSON.stringify(sealPayload, null, 2), false
+      );
+    } catch (err: any) {
+      return mkText("EXPORT ERROR: " + (err.message || String(err)), true);
+    }
   }
 
   return mkText("Unknown tool: " + name, true);

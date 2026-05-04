@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// src/sswp/core/witness.ts
+// src/core/witness.ts
 var import_node_crypto3 = require("node:crypto");
 var import_node_fs3 = require("node:fs");
 var import_node_path3 = require("node:path");
@@ -26,7 +26,7 @@ function seal(context, response) {
   return sealed;
 }
 
-// src/sswp/core/build-scanner.ts
+// src/core/build-scanner.ts
 var import_node_fs = require("node:fs");
 var import_node_crypto2 = require("node:crypto");
 var import_node_path = require("node:path");
@@ -82,18 +82,69 @@ function inferBuildCommand(projectRoot) {
   return "unknown";
 }
 
-// src/sswp/core/gate-runner.ts
+// src/core/gate-runner.ts
 var import_node_child_process = require("node:child_process");
 var import_node_fs2 = require("node:fs");
 var import_node_path2 = require("node:path");
-async function runGates(projectRoot, env) {
+async function runGates(projectRoot, env, regime = "developer") {
   const results = [];
-  results.push(await gitIntegrityGate(projectRoot));
+  results.push(await languageDetectionGate(projectRoot));
+  results.push(await gitIntegrityGate(projectRoot, regime));
   results.push(await lockfileGate(projectRoot));
   results.push(await deterministicBuildGate(projectRoot, env));
   results.push(await testGate(projectRoot, env));
   results.push(await lintGate(projectRoot));
   return results;
+}
+function languageDetectionGate(root) {
+  const start = Date.now();
+  const languages = [];
+  if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "package.json"))) languages.push("node");
+  if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "requirements.txt")) || (0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "pyproject.toml")) || (0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "setup.py"))) languages.push("python");
+  if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "go.mod"))) languages.push("go");
+  if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "Cargo.toml"))) languages.push("rust");
+  if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "index.html")) && !(0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "package.json"))) languages.push("html");
+  if (!languages.length) languages.push("unknown");
+  return {
+    gate: "LANGUAGE_DETECTION",
+    status: "PASS",
+    evidence: `Detected: ${languages.join(", ")}`,
+    durationMs: Date.now() - start
+  };
+}
+async function lockfileGate(root) {
+  return timed("LOCKFILE", () => {
+    if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "package.json"))) {
+      const hasLock = (0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "package-lock.json")) || (0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "yarn.lock")) || (0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "pnpm-lock.yaml"));
+      if (!hasLock) return { gate: "LOCKFILE", status: "FAIL", evidence: "package.json present but no lockfile (package-lock.json, yarn.lock, or pnpm-lock.yaml)", durationMs: 0 };
+      return { gate: "LOCKFILE", status: "PASS", evidence: "Lockfile present", durationMs: 0 };
+    }
+    if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "requirements.txt"))) {
+      return { gate: "LOCKFILE", status: "PASS", evidence: "requirements.txt (pinned dependencies)", durationMs: 0 };
+    }
+    if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "pyproject.toml"))) {
+      const hasPoetryLock = (0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "poetry.lock"));
+      const hasUvLock = (0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "uv.lock"));
+      return {
+        gate: "LOCKFILE",
+        status: hasPoetryLock || hasUvLock ? "PASS" : "WARN",
+        evidence: hasPoetryLock ? "poetry.lock present" : hasUvLock ? "uv.lock present" : "pyproject.toml present but no lockfile",
+        durationMs: 0
+      };
+    }
+    if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "go.mod"))) {
+      const hasSum = (0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "go.sum"));
+      return { gate: "LOCKFILE", status: hasSum ? "PASS" : "WARN", evidence: hasSum ? "go.sum present" : "go.mod present but no go.sum", durationMs: 0 };
+    }
+    if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "Cargo.toml"))) {
+      const hasCargoLock = (0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "Cargo.lock"));
+      return { gate: "LOCKFILE", status: hasCargoLock ? "PASS" : "WARN", evidence: hasCargoLock ? "Cargo.lock present" : "Cargo.toml present but no Cargo.lock", durationMs: 0 };
+    }
+    if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "index.html")) && !(0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "package.json"))) {
+      return { gate: "LOCKFILE", status: "PASS", evidence: "Static site (no dependency manager)", durationMs: 0 };
+    }
+    return { gate: "LOCKFILE", status: "INCONCLUSIVE", evidence: "No recognized project type", durationMs: 0 };
+  });
 }
 function timed(name, fn) {
   const start = Date.now();
@@ -102,74 +153,187 @@ function timed(name, fn) {
   result.gate = name;
   return result;
 }
-async function gitIntegrityGate(root) {
+async function gitIntegrityGate(root, regime) {
   return timed("GIT_INTEGRITY", () => {
     const r = (0, import_node_child_process.spawnSync)("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" });
     const clean = !r.stdout?.trim();
-    return {
-      gate: "GIT_INTEGRITY",
-      status: clean ? "PASS" : "FAIL",
-      evidence: clean ? "Working tree clean" : `Modified files: ${r.stdout?.trim().split("\n").length}`,
-      durationMs: 0
-    };
-  });
-}
-async function lockfileGate(root) {
-  return timed("LOCKFILE", () => {
-    const hasPkg = (0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "package.json"));
-    const hasLock = (0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "package-lock.json"));
-    if (!hasPkg) return { gate: "LOCKFILE", status: "INCONCLUSIVE", evidence: "No package.json", durationMs: 0 };
-    if (!hasLock) return { gate: "LOCKFILE", status: "FAIL", evidence: "No package-lock.json", durationMs: 0 };
-    return { gate: "LOCKFILE", status: "PASS", evidence: "package-lock.json present", durationMs: 0 };
+    if (clean) {
+      return { gate: "GIT_INTEGRITY", status: "PASS", evidence: "Working tree clean", durationMs: 0 };
+    }
+    const fileCount = r.stdout?.trim().split("\n").length || 0;
+    const evidence = `Modified files: ${fileCount}`;
+    const status = regime === "developer" ? "WARN" : "FAIL";
+    return { gate: "GIT_INTEGRITY", status, evidence, durationMs: 0 };
   });
 }
 async function deterministicBuildGate(root, env) {
   return timed("DETERMINISTIC_BUILD", () => {
-    const cmd = env.buildCommand;
-    if (cmd === "unknown") {
-      return { gate: "DETERMINISTIC_BUILD", status: "INCONCLUSIVE", evidence: "No build command detected", durationMs: 0 };
+    if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "package.json"))) {
+      const hasBuildScript = hasScript(root, "build");
+      if (!hasBuildScript) {
+        return { gate: "DETERMINISTIC_BUILD", status: "INCONCLUSIVE", evidence: "No build script in package.json", durationMs: 0 };
+      }
+      const r = (0, import_node_child_process.spawnSync)("npm", ["run", "build"], { cwd: root, encoding: "utf8", shell: true, timeout: 6e4 });
+      const passed = r.status === 0;
+      return {
+        gate: "DETERMINISTIC_BUILD",
+        status: passed ? "PASS" : "FAIL",
+        evidence: passed ? "Build succeeded: npm run build" : `Build failed: ${r.stderr?.slice(0, 200)}`,
+        durationMs: 0
+      };
     }
-    const r = (0, import_node_child_process.spawnSync)(cmd.split(" ")[0], cmd.split(" ").slice(1), { cwd: root, encoding: "utf8", shell: true });
-    const passed = r.status === 0;
-    return {
-      gate: "DETERMINISTIC_BUILD",
-      status: passed ? "PASS" : "FAIL",
-      evidence: passed ? `Build succeeded: ${cmd}` : `Build failed: ${r.stderr?.slice(0, 200)}`,
-      durationMs: 0
-    };
+    if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "pyproject.toml"))) {
+      const r = (0, import_node_child_process.spawnSync)("python3", ["-m", "build"], { cwd: root, encoding: "utf8", shell: true, timeout: 6e4 });
+      return {
+        gate: "DETERMINISTIC_BUILD",
+        status: r.status === 0 ? "PASS" : "FAIL",
+        evidence: r.status === 0 ? "Build succeeded: python3 -m build" : `Build failed: ${r.stderr?.slice(0, 200)}`,
+        durationMs: 0
+      };
+    }
+    if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "Makefile"))) {
+      const r = (0, import_node_child_process.spawnSync)("make", [], { cwd: root, encoding: "utf8", shell: true, timeout: 6e4 });
+      return {
+        gate: "DETERMINISTIC_BUILD",
+        status: r.status === 0 ? "PASS" : "FAIL",
+        evidence: r.status === 0 ? "Build succeeded: make" : `Build failed: ${r.stderr?.slice(0, 200)}`,
+        durationMs: 0
+      };
+    }
+    if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "go.mod"))) {
+      const r = (0, import_node_child_process.spawnSync)("go", ["build", "./..."], { cwd: root, encoding: "utf8", shell: true, timeout: 6e4 });
+      return {
+        gate: "DETERMINISTIC_BUILD",
+        status: r.status === 0 ? "PASS" : "FAIL",
+        evidence: r.status === 0 ? "Build succeeded: go build" : `Build failed: ${r.stderr?.slice(0, 200)}`,
+        durationMs: 0
+      };
+    }
+    if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "Cargo.toml"))) {
+      const r = (0, import_node_child_process.spawnSync)("cargo", ["build"], { cwd: root, encoding: "utf8", shell: true, timeout: 6e4 });
+      return {
+        gate: "DETERMINISTIC_BUILD",
+        status: r.status === 0 ? "PASS" : "FAIL",
+        evidence: r.status === 0 ? "Build succeeded: cargo build" : `Build failed: ${r.stderr?.slice(0, 200)}`,
+        durationMs: 0
+      };
+    }
+    if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "index.html")) && !(0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "package.json"))) {
+      return { gate: "DETERMINISTIC_BUILD", status: "PASS", evidence: "Static HTML site (no build required)", durationMs: 0 };
+    }
+    return { gate: "DETERMINISTIC_BUILD", status: "INCONCLUSIVE", evidence: "No recognized build system", durationMs: 0 };
   });
 }
 async function testGate(root, env) {
   return timed("TEST_PASS", () => {
-    const r = (0, import_node_child_process.spawnSync)("npm", ["test"], { cwd: root, encoding: "utf8", shell: true });
-    const passed = r.status === 0;
-    return {
-      gate: "TEST_PASS",
-      status: passed ? "PASS" : "FAIL",
-      evidence: passed ? "All tests passed" : `Tests failed: ${r.stderr?.slice(0, 200) || r.stdout?.slice(0, 200)}`,
-      durationMs: 0
-    };
+    if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "package.json"))) {
+      const hasTestScript = hasScript(root, "test");
+      if (!hasTestScript) {
+        return { gate: "TEST_PASS", status: "INCONCLUSIVE", evidence: "No test script in package.json", durationMs: 0 };
+      }
+      const r = (0, import_node_child_process.spawnSync)("npm", ["test"], { cwd: root, encoding: "utf8", shell: true, timeout: 12e4 });
+      const passed = r.status === 0;
+      return {
+        gate: "TEST_PASS",
+        status: passed ? "PASS" : "FAIL",
+        evidence: passed ? "npm test passed" : `npm test failed: ${(r.stderr || r.stdout)?.slice(0, 200)}`,
+        durationMs: 0
+      };
+    }
+    if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "pyproject.toml")) || (0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "requirements.txt"))) {
+      const r = (0, import_node_child_process.spawnSync)("python3", ["-m", "pytest"], { cwd: root, encoding: "utf8", shell: true, timeout: 12e4 });
+      return {
+        gate: "TEST_PASS",
+        status: r.status === 0 ? "PASS" : "FAIL",
+        evidence: r.status === 0 ? "pytest passed" : `pytest failed: ${(r.stderr || r.stdout)?.slice(0, 200)}`,
+        durationMs: 0
+      };
+    }
+    if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "Makefile"))) {
+      const r = (0, import_node_child_process.spawnSync)("make", ["test"], { cwd: root, encoding: "utf8", shell: true, timeout: 12e4 });
+      return {
+        gate: "TEST_PASS",
+        status: r.status === 0 ? "PASS" : "FAIL",
+        evidence: r.status === 0 ? "make test passed" : `make test failed: ${(r.stderr || r.stdout)?.slice(0, 200)}`,
+        durationMs: 0
+      };
+    }
+    if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "go.mod"))) {
+      const r = (0, import_node_child_process.spawnSync)("go", ["test", "./..."], { cwd: root, encoding: "utf8", shell: true, timeout: 12e4 });
+      return {
+        gate: "TEST_PASS",
+        status: r.status === 0 ? "PASS" : "FAIL",
+        evidence: r.status === 0 ? "go test passed" : `go test failed: ${(r.stderr || r.stdout)?.slice(0, 200)}`,
+        durationMs: 0
+      };
+    }
+    if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "Cargo.toml"))) {
+      const r = (0, import_node_child_process.spawnSync)("cargo", ["test"], { cwd: root, encoding: "utf8", shell: true, timeout: 12e4 });
+      return {
+        gate: "TEST_PASS",
+        status: r.status === 0 ? "PASS" : "FAIL",
+        evidence: r.status === 0 ? "cargo test passed" : `cargo test failed: ${(r.stderr || r.stdout)?.slice(0, 200)}`,
+        durationMs: 0
+      };
+    }
+    return { gate: "TEST_PASS", status: "INCONCLUSIVE", evidence: "No test runner configured", durationMs: 0 };
   });
 }
 async function lintGate(root) {
   return timed("LINT", () => {
-    const candidates = [
-      ["npx", "eslint", "--max-warnings=0", "."],
-      ["npx", "biome", "check", "."],
-      ["npx", "tsc", "--noEmit"]
-    ];
-    for (const [cmd, ...args] of candidates) {
-      const r = (0, import_node_child_process.spawnSync)(cmd, args, { cwd: root, encoding: "utf8", shell: true });
-      if (r.status === 0) {
-        return { gate: "LINT", status: "PASS", evidence: `${cmd} passed`, durationMs: 0 };
+    const eslintConfigs = [".eslintrc.js", ".eslintrc.cjs", ".eslintrc.json", ".eslintrc.yaml", ".eslintrc.yml", "eslint.config.js", "eslint.config.mjs", "eslint.config.ts"];
+    const hasEslintConfig = eslintConfigs.some((cfg) => (0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, cfg)));
+    if (hasEslintConfig) {
+      const r = (0, import_node_child_process.spawnSync)("npx", ["eslint", "--max-warnings=0", "."], { cwd: root, encoding: "utf8", shell: true, timeout: 12e4 });
+      if (r.error || (r.stderr?.includes("not found") || r.stderr?.includes("ENOENT") || r.stderr?.includes("ERR! code"))) {
+        return { gate: "LINT", status: "INCONCLUSIVE", evidence: "ESLint config present but eslint not installed", durationMs: 0 };
       }
-      if (r.error || (r.stderr?.includes("not found") || r.stderr?.includes("ENOENT"))) continue;
+      return {
+        gate: "LINT",
+        status: r.status === 0 ? "PASS" : "FAIL",
+        evidence: r.status === 0 ? "eslint passed" : `eslint failed: ${(r.stderr || r.stdout)?.slice(0, 200)}`,
+        durationMs: 0
+      };
+    }
+    const hasBiomeConfig = (0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "biome.json"));
+    if (hasBiomeConfig) {
+      const r = (0, import_node_child_process.spawnSync)("npx", ["biome", "check", "."], { cwd: root, encoding: "utf8", shell: true, timeout: 12e4 });
+      if (r.error || (r.stderr?.includes("not found") || r.stderr?.includes("ENOENT") || r.stderr?.includes("ERR! code"))) {
+        return { gate: "LINT", status: "INCONCLUSIVE", evidence: "Biome config present but biome not installed", durationMs: 0 };
+      }
+      return {
+        gate: "LINT",
+        status: r.status === 0 ? "PASS" : "FAIL",
+        evidence: r.status === 0 ? "biome passed" : `biome failed: ${(r.stderr || r.stdout)?.slice(0, 200)}`,
+        durationMs: 0
+      };
+    }
+    const hasTscConfig = (0, import_node_fs2.existsSync)((0, import_node_path2.join)(root, "tsconfig.json"));
+    if (hasTscConfig) {
+      const r = (0, import_node_child_process.spawnSync)("npx", ["tsc", "--noEmit"], { cwd: root, encoding: "utf8", shell: true, timeout: 12e4 });
+      if (r.error || (r.stderr?.includes("not found") || r.stderr?.includes("ENOENT") || r.stderr?.includes("ERR! code"))) {
+        return { gate: "LINT", status: "INCONCLUSIVE", evidence: "tsconfig.json present but typescript not installed", durationMs: 0 };
+      }
+      return {
+        gate: "LINT",
+        status: r.status === 0 ? "PASS" : "FAIL",
+        evidence: r.status === 0 ? "tsc --noEmit passed" : `tsc failed: ${(r.stderr || r.stdout)?.slice(0, 200)}`,
+        durationMs: 0
+      };
     }
     return { gate: "LINT", status: "INCONCLUSIVE", evidence: "No linter configured", durationMs: 0 };
   });
 }
+function hasScript(root, scriptName) {
+  try {
+    const pkg = JSON.parse((0, import_node_fs2.readFileSync)((0, import_node_path2.join)(root, "package.json"), "utf8"));
+    return typeof pkg.scripts?.[scriptName] === "string";
+  } catch {
+    return false;
+  }
+}
 
-// src/sswp/core/kimi-reasoner.ts
+// src/core/kimi-reasoner.ts
 var OLLAMA_CLOUD_ENDPOINT = "https://api.ollama.com/v1/chat/completions";
 var KIMI_MODEL = "kimi-k2.5";
 var TIMEOUT_MS = 1e4;
@@ -316,7 +480,7 @@ async function kimiAnalyze(deps) {
   }
 }
 
-// src/sswp/core/adversarial-probe.ts
+// src/core/adversarial-probe.ts
 async function runAdversarialProbes(deps) {
   const probes = [];
   let suspiciousCount = 0;
@@ -348,25 +512,98 @@ async function runAdversarialProbes(deps) {
   };
 }
 function probeTyposquatting(dep) {
+  const highValueTargets = [
+    "react",
+    "vue",
+    "lodash",
+    "axios",
+    "express",
+    "moment",
+    "chalk",
+    "commander",
+    "tslib",
+    "dotenv",
+    "typescript",
+    "jest",
+    "eslint",
+    "prettier",
+    "vite",
+    "webpack",
+    "next",
+    "angular",
+    "rxjs",
+    "jquery"
+  ];
+  const name = dep.name.toLowerCase();
+  if (highValueTargets.includes(name)) {
+    return {
+      package: dep.name,
+      probe: "TYPO_SQUATTING",
+      result: "PASS",
+      detail: "Known legitimate package"
+    };
+  }
   const suspiciousPatterns = [
+    "crossenv",
+    "nodemail.js",
+    "flatmap-stream",
+    "peacenotwar",
+    "node-ipc",
     "left-pad",
     "event-stream",
     "colors",
-    "faker",
-    "node-ipc",
-    "rc",
-    "ua-parser-js",
-    "coa",
-    "esbuild",
-    "discord.js"
+    "faker"
   ];
-  const isSuspicious = suspiciousPatterns.some((p) => dep.name.toLowerCase().includes(p));
+  if (suspiciousPatterns.some((p) => name.includes(p))) {
+    return {
+      package: dep.name,
+      probe: "TYPO_SQUATTING",
+      result: "CRITICAL",
+      detail: "Matches known malicious or compromised package pattern"
+    };
+  }
+  const legitSuffixes = ["js", "ts", "core", "cli", "ui", "lib", "kit", "app", "api"];
+  for (const target of highValueTargets) {
+    if (name === target) continue;
+    if (legitSuffixes.some((s) => name === target + s)) continue;
+    const distance = levenshteinDistance(name, target);
+    if (distance > 0 && distance <= 2 && name.length >= 4) {
+      return {
+        package: dep.name,
+        probe: "TYPO_SQUATTING",
+        result: "WARN",
+        detail: `Potential typosquatting of '${target}' (edit distance: ${distance})`
+      };
+    }
+  }
   return {
     package: dep.name,
     probe: "TYPO_SQUATTING",
-    result: isSuspicious ? "WARN" : "PASS",
-    detail: isSuspicious ? "Name matches known suspicious packages" : "Name heuristic clean"
+    result: "PASS",
+    detail: "Name heuristic clean"
   };
+}
+function levenshteinDistance(a, b) {
+  const matrix = Array.from(
+    { length: a.length + 1 },
+    () => new Array(b.length + 1).fill(0)
+  );
+  for (let i = 0; i <= a.length; i++) matrix[i][0] = i;
+  for (let j = 0; j <= b.length; j++) matrix[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(
+        matrix[i - 1][j] + 1,
+        // deletion
+        matrix[i][j - 1] + 1,
+        // insertion
+        matrix[i - 1][j - 1] + cost
+        // substitution
+      );
+    }
+  }
+  return matrix[a.length][b.length];
 }
 function probeVersionAnomaly(dep) {
   const range = ["*", ">=", "<", "^0", "~0", "latest"];
@@ -391,32 +628,49 @@ async function probeWithKimi(deps) {
   return kimiAnalyze(deps);
 }
 
-// src/sswp/core/witness.ts
-async function witness(projectRoot) {
-  const { entries, env, totalPackages, suspiciousCount } = await scanBuild(projectRoot);
+// src/core/witness.ts
+async function witness(projectRoot, regime = "developer") {
+  const projectType = detectProjectType(projectRoot);
+  const projectName = resolveProjectName(projectRoot, projectType);
+  let entries = [];
+  let env = { nodeVersion: process.version, os: process.platform, arch: process.arch, ci: !!process.env.CI, buildCommand: "unknown" };
+  let totalPackages = 0;
+  let suspiciousCount = 0;
+  if (projectType !== "html" && (0, import_node_fs3.existsSync)((0, import_node_path3.join)(projectRoot, "package.json"))) {
+    const scan = await scanBuild(projectRoot);
+    entries = scan.entries;
+    env = scan.env;
+    totalPackages = scan.totalPackages;
+    suspiciousCount = scan.suspiciousCount;
+  }
   const scanSeal = seal(
-    { phase: "SCAN", totalPackages, suspiciousCount },
-    `Scanned ${totalPackages} packages, ${suspiciousCount} flagged`
+    { phase: "SCAN", totalPackages, suspiciousCount, projectType },
+    `Scanned ${totalPackages} packages, ${suspiciousCount} flagged (type: ${projectType})`
   );
-  const gateResults = await runGates(projectRoot, env);
+  const gateResults = await runGates(projectRoot, env, regime);
   const passedGates = gateResults.filter((g) => g.status === "PASS").length;
   const gateSeal = seal(
     { phase: "GATES", passed: passedGates, total: gateResults.length },
     JSON.stringify(gateResults.map((g) => ({ gate: g.gate, status: g.status })))
   );
-  const adversarial = await runAdversarialProbes(entries);
+  let adversarial = { totalPackages: 0, suspiciousPackages: 0, probes: [], overallRisk: 0 };
+  if (entries.length > 0) {
+    adversarial = await runAdversarialProbes(entries);
+  }
   const advSeal = seal(
     { phase: "ADVERSARIAL", overallRisk: adversarial.overallRisk, probes: adversarial.probes.length },
     JSON.stringify(adversarial)
   );
-  const pkgJson = JSON.parse((0, import_node_fs3.readFileSync)((0, import_node_path3.join)(projectRoot, "package.json"), "utf8"));
   const gitHash = execGit(projectRoot, ["rev-parse", "HEAD"]);
   const branch = execGit(projectRoot, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  const overallStatus = gateResults.some((g) => g.status === "FAIL") ? "FAIL" : gateResults.some((g) => g.status === "INCONCLUSIVE" || g.status === "WARN") ? "WARN" : "PASS";
   const attestation = {
-    version: "1.0.0",
+    overallStatus,
+    version: "1.1.0",
     timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+    projectType,
     target: {
-      name: pkgJson.name || "unknown",
+      name: projectName,
       repo: projectRoot,
       commitHash: gitHash || "unknown",
       branch: branch || "unknown"
@@ -444,6 +698,36 @@ async function witness(projectRoot) {
   );
   return attestation;
 }
+function detectProjectType(root) {
+  if ((0, import_node_fs3.existsSync)((0, import_node_path3.join)(root, "package.json"))) return "node";
+  if ((0, import_node_fs3.existsSync)((0, import_node_path3.join)(root, "requirements.txt")) || (0, import_node_fs3.existsSync)((0, import_node_path3.join)(root, "pyproject.toml")) || (0, import_node_fs3.existsSync)((0, import_node_path3.join)(root, "setup.py"))) return "python";
+  if ((0, import_node_fs3.existsSync)((0, import_node_path3.join)(root, "go.mod"))) return "go";
+  if ((0, import_node_fs3.existsSync)((0, import_node_path3.join)(root, "Cargo.toml"))) return "rust";
+  if ((0, import_node_fs3.existsSync)((0, import_node_path3.join)(root, "index.html"))) return "html";
+  return "unknown";
+}
+function resolveProjectName(root, projectType) {
+  try {
+    if (projectType === "node") {
+      const pkg = JSON.parse((0, import_node_fs3.readFileSync)((0, import_node_path3.join)(root, "package.json"), "utf8"));
+      return pkg.name || root.split("/").pop() || "unknown";
+    }
+    if (projectType === "python") {
+      if ((0, import_node_fs3.existsSync)((0, import_node_path3.join)(root, "pyproject.toml"))) {
+        const toml = (0, import_node_fs3.readFileSync)((0, import_node_path3.join)(root, "pyproject.toml"), "utf8");
+        const match = toml.match(/name\s*=\s*"(.+)"/);
+        if (match) return match[1];
+      }
+    }
+    if (projectType === "go") {
+      const gomod = (0, import_node_fs3.readFileSync)((0, import_node_path3.join)(root, "go.mod"), "utf8");
+      const match = gomod.match(/module\s+(.+)/);
+      if (match) return match[1].split("/").pop() || match[1];
+    }
+  } catch {
+  }
+  return root.split("/").pop() || "unknown";
+}
 function execGit(cwd, args) {
   const r = (0, import_node_child_process2.spawnSync)("git", args, { cwd, encoding: "utf8" });
   return r.stdout?.trim() || "";
@@ -454,6 +738,8 @@ function formatAttestation(att) {
   lines.push(`   Target: ${att.target.name} (${att.target.commitHash.slice(0, 8)})`);
   lines.push(`   Branch: ${att.target.branch} | Env: ${att.environment.os}-${att.environment.arch}`);
   lines.push(`   Built: ${att.timestamp}`);
+  const ovIcon = att.overallStatus === "PASS" ? "\u2713" : att.overallStatus === "WARN" ? "\u26A0" : "\u2717";
+  lines.push(`   Overall: ${ovIcon} ${att.overallStatus || "UNKNOWN"}`);
   lines.push("");
   lines.push("   GATES:");
   for (const g of att.gates) {
@@ -467,7 +753,7 @@ function formatAttestation(att) {
   return lines.join("\n");
 }
 
-// src/sswp/core/registry-db.ts
+// src/core/registry-db.ts
 var import_node_crypto4 = require("node:crypto");
 var import_node_fs4 = require("node:fs");
 var import_node_os = require("node:os");
@@ -545,16 +831,29 @@ function getAllNodesStats() {
   }));
 }
 
-// src/sswp/cli.ts
+// src/cli.ts
 var import_node_path5 = require("node:path");
 var import_node_fs5 = require("node:fs");
 var import_node_crypto5 = require("node:crypto");
 async function main() {
   const [, , command, ...rest] = process.argv;
   if (command === "witness") {
-    const projectRoot = (0, import_node_path5.resolve)(rest[0] || process.cwd());
-    console.error(`\u2B21  SSWP \u2014 Witnessing ${projectRoot}...`);
-    const att = await witness(projectRoot);
+    let regime = "developer";
+    const positional = [];
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "--regime" && rest[i + 1]) {
+        const val = rest[i + 1];
+        if (val === "developer" || val === "ci" || val === "strict") {
+          regime = val;
+          i++;
+          continue;
+        }
+      }
+      positional.push(rest[i]);
+    }
+    const projectRoot = (0, import_node_path5.resolve)(positional[0] || process.cwd());
+    console.error(`\u2B21  SSWP \u2014 Witnessing ${projectRoot}... (regime: ${regime})`);
+    const att = await witness(projectRoot, regime);
     console.log(formatAttestation(att));
     const outPath = (0, import_node_path5.resolve)(projectRoot, `${att.target.name}.sswp.json`);
     (0, import_node_fs5.writeFileSync)(outPath, JSON.stringify(att, null, 2));
@@ -567,7 +866,7 @@ async function main() {
       console.error(`\u2713 Attestation written: ${outPath}`);
       console.error(`\u26A0 Registry append failed`);
     }
-    const failed = att.gates.some((g) => g.status === "FAIL");
+    const failed = att.overallStatus === "FAIL";
     process.exit(failed ? 1 : 0);
   }
   if (command === "verify") {

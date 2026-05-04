@@ -2,18 +2,21 @@
 /** Runs VERITAS-style deterministic gates on a build */
 
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { GateResult, BuildEnvironment } from './types.js';
 
-export async function runGates(projectRoot: string, env: BuildEnvironment): Promise<GateResult[]> {
+/** Regime controls gate severity: developer (lenient), ci (moderate), strict (hard-fail) */
+export type Regime = 'developer' | 'ci' | 'strict';
+
+export async function runGates(projectRoot: string, env: BuildEnvironment, regime: Regime = 'developer'): Promise<GateResult[]> {
   const results: GateResult[] = [];
 
   // Gate 0: Language detection — polyglot support (Node, Python, Go, Rust, HTML)
   results.push(await languageDetectionGate(projectRoot));
 
-  // Gate 1: Source Integrity — repo has clean working tree
-  results.push(await gitIntegrityGate(projectRoot));
+  // Gate 1: Source Integrity — repo has clean working tree (regime-aware)
+  results.push(await gitIntegrityGate(projectRoot, regime));
   
   // Gate 2: Dependency Lock — lockfile matches package.json (or equivalent)
   results.push(await lockfileGate(projectRoot));
@@ -101,43 +104,82 @@ function timed(name: string, fn: () => GateResult): GateResult {
   return result;
 }
 
-async function gitIntegrityGate(root: string): Promise<GateResult> {
+async function gitIntegrityGate(root: string, regime: Regime): Promise<GateResult> {
   return timed('GIT_INTEGRITY', () => {
     const r = spawnSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' });
     const clean = !r.stdout?.trim();
-    return {
-      gate: 'GIT_INTEGRITY',
-      status: clean ? 'PASS' : 'FAIL',
-      evidence: clean ? 'Working tree clean' : `Modified files: ${r.stdout?.trim().split('\n').length}`,
-      durationMs: 0,
-    };
+    if (clean) {
+      return { gate: 'GIT_INTEGRITY', status: 'PASS' as const, evidence: 'Working tree clean', durationMs: 0 };
+    }
+    const fileCount = r.stdout?.trim().split('\n').length || 0;
+    const evidence = `Modified files: ${fileCount}`;
+    // developer regime: dirty tree is WARN, not FAIL — normal for dev machines
+    // ci/strict regime: dirty tree is FAIL — must be clean before witness
+    const status = regime === 'developer' ? 'WARN' as const : 'FAIL' as const;
+    return { gate: 'GIT_INTEGRITY', status, evidence, durationMs: 0 };
   });
 }
 
 async function deterministicBuildGate(root: string, env: BuildEnvironment): Promise<GateResult> {
   return timed('DETERMINISTIC_BUILD', () => {
-    const buildCandidates = [
-      { check: 'package.json', cmd: ['npm', 'run', 'build'] },
-      { check: 'Makefile', cmd: ['make'] },
-      { check: 'pyproject.toml', cmd: ['python3', '-m', 'build'] },
-      { check: 'go.mod', cmd: ['go', 'build', './...'] },
-      { check: 'Cargo.toml', cmd: ['cargo', 'build'] },
-      { check: 'index.html', cmd: ['echo', 'static'] },  // static sites pass
-    ];
-    for (const { check, cmd } of buildCandidates) {
-      if (existsSync(join(root, check))) {
-        if (check === 'index.html' && !existsSync(join(root, 'package.json'))) {
-          return { gate: 'DETERMINISTIC_BUILD', status: 'PASS' as const, evidence: 'Static HTML site (no build required)', durationMs: 0 };
-        }
-        const r = spawnSync(cmd[0], cmd.slice(1), { cwd: root, encoding: 'utf8', shell: true, timeout: 60000 });
-        const passed = r.status === 0;
-        return {
-          gate: 'DETERMINISTIC_BUILD',
-          status: passed ? 'PASS' : 'FAIL',
-          evidence: passed ? `Build succeeded: ${cmd.join(' ')}` : `Build failed: ${r.stderr?.slice(0, 200)}`,
-          durationMs: 0,
-        };
+    // Node: check if build script exists before running
+    if (existsSync(join(root, 'package.json'))) {
+      const hasBuildScript = hasScript(root, 'build');
+      if (!hasBuildScript) {
+        return { gate: 'DETERMINISTIC_BUILD', status: 'INCONCLUSIVE' as const, evidence: 'No build script in package.json', durationMs: 0 };
       }
+      const r = spawnSync('npm', ['run', 'build'], { cwd: root, encoding: 'utf8', shell: true, timeout: 60000 });
+      const passed = r.status === 0;
+      return {
+        gate: 'DETERMINISTIC_BUILD',
+        status: passed ? 'PASS' : 'FAIL',
+        evidence: passed ? 'Build succeeded: npm run build' : `Build failed: ${r.stderr?.slice(0, 200)}`,
+        durationMs: 0,
+      };
+    }
+    // Python
+    if (existsSync(join(root, 'pyproject.toml'))) {
+      const r = spawnSync('python3', ['-m', 'build'], { cwd: root, encoding: 'utf8', shell: true, timeout: 60000 });
+      return {
+        gate: 'DETERMINISTIC_BUILD',
+        status: r.status === 0 ? 'PASS' : 'FAIL',
+        evidence: r.status === 0 ? 'Build succeeded: python3 -m build' : `Build failed: ${r.stderr?.slice(0, 200)}`,
+        durationMs: 0,
+      };
+    }
+    // Makefile
+    if (existsSync(join(root, 'Makefile'))) {
+      const r = spawnSync('make', [], { cwd: root, encoding: 'utf8', shell: true, timeout: 60000 });
+      return {
+        gate: 'DETERMINISTIC_BUILD',
+        status: r.status === 0 ? 'PASS' : 'FAIL',
+        evidence: r.status === 0 ? 'Build succeeded: make' : `Build failed: ${r.stderr?.slice(0, 200)}`,
+        durationMs: 0,
+      };
+    }
+    // Go
+    if (existsSync(join(root, 'go.mod'))) {
+      const r = spawnSync('go', ['build', './...'], { cwd: root, encoding: 'utf8', shell: true, timeout: 60000 });
+      return {
+        gate: 'DETERMINISTIC_BUILD',
+        status: r.status === 0 ? 'PASS' : 'FAIL',
+        evidence: r.status === 0 ? 'Build succeeded: go build' : `Build failed: ${r.stderr?.slice(0, 200)}`,
+        durationMs: 0,
+      };
+    }
+    // Rust
+    if (existsSync(join(root, 'Cargo.toml'))) {
+      const r = spawnSync('cargo', ['build'], { cwd: root, encoding: 'utf8', shell: true, timeout: 60000 });
+      return {
+        gate: 'DETERMINISTIC_BUILD',
+        status: r.status === 0 ? 'PASS' : 'FAIL',
+        evidence: r.status === 0 ? 'Build succeeded: cargo build' : `Build failed: ${r.stderr?.slice(0, 200)}`,
+        durationMs: 0,
+      };
+    }
+    // Static HTML
+    if (existsSync(join(root, 'index.html')) && !existsSync(join(root, 'package.json'))) {
+      return { gate: 'DETERMINISTIC_BUILD', status: 'PASS' as const, evidence: 'Static HTML site (no build required)', durationMs: 0 };
     }
     return { gate: 'DETERMINISTIC_BUILD', status: 'INCONCLUSIVE' as const, evidence: 'No recognized build system', durationMs: 0 };
   });
@@ -145,26 +187,60 @@ async function deterministicBuildGate(root: string, env: BuildEnvironment): Prom
 
 async function testGate(root: string, env: BuildEnvironment): Promise<GateResult> {
   return timed('TEST_PASS', () => {
-    const testCandidates = [
-      { check: 'package.json', cmd: ['npm', 'test'] },
-      { check: 'Makefile', cmd: ['make', 'test'] },
-      { check: 'pyproject.toml', cmd: ['python3', '-m', 'pytest'] },
-      { check: 'go.mod', cmd: ['go', 'test', './...'] },
-      { check: 'Cargo.toml', cmd: ['cargo', 'test'] },
-    ];
-    for (const { check, cmd } of testCandidates) {
-      if (existsSync(join(root, check))) {
-        const r = spawnSync(cmd[0], cmd.slice(1), { cwd: root, encoding: 'utf8', shell: true, timeout: 120000 });
-        const passed = r.status === 0;
-        if (passed) return { gate: 'TEST_PASS', status: 'PASS' as const, evidence: `${cmd.join(' ')} passed`, durationMs: 0 };
-        // Command failed but it was the right test runner
-        return {
-          gate: 'TEST_PASS',
-          status: 'FAIL',
-          evidence: `${cmd.join(' ')} failed: ${(r.stderr || r.stdout)?.slice(0, 200)}`,
-          durationMs: 0,
-        };
+    // Node: check if test script exists before running
+    if (existsSync(join(root, 'package.json'))) {
+      const hasTestScript = hasScript(root, 'test');
+      if (!hasTestScript) {
+        return { gate: 'TEST_PASS', status: 'INCONCLUSIVE' as const, evidence: 'No test script in package.json', durationMs: 0 };
       }
+      const r = spawnSync('npm', ['test'], { cwd: root, encoding: 'utf8', shell: true, timeout: 120000 });
+      const passed = r.status === 0;
+      return {
+        gate: 'TEST_PASS',
+        status: passed ? 'PASS' : 'FAIL',
+        evidence: passed ? 'npm test passed' : `npm test failed: ${(r.stderr || r.stdout)?.slice(0, 200)}`,
+        durationMs: 0,
+      };
+    }
+    // Python: pytest
+    if (existsSync(join(root, 'pyproject.toml')) || existsSync(join(root, 'requirements.txt'))) {
+      const r = spawnSync('python3', ['-m', 'pytest'], { cwd: root, encoding: 'utf8', shell: true, timeout: 120000 });
+      return {
+        gate: 'TEST_PASS',
+        status: r.status === 0 ? 'PASS' : 'FAIL',
+        evidence: r.status === 0 ? 'pytest passed' : `pytest failed: ${(r.stderr || r.stdout)?.slice(0, 200)}`,
+        durationMs: 0,
+      };
+    }
+    // Makefile
+    if (existsSync(join(root, 'Makefile'))) {
+      const r = spawnSync('make', ['test'], { cwd: root, encoding: 'utf8', shell: true, timeout: 120000 });
+      return {
+        gate: 'TEST_PASS',
+        status: r.status === 0 ? 'PASS' : 'FAIL',
+        evidence: r.status === 0 ? 'make test passed' : `make test failed: ${(r.stderr || r.stdout)?.slice(0, 200)}`,
+        durationMs: 0,
+      };
+    }
+    // Go
+    if (existsSync(join(root, 'go.mod'))) {
+      const r = spawnSync('go', ['test', './...'], { cwd: root, encoding: 'utf8', shell: true, timeout: 120000 });
+      return {
+        gate: 'TEST_PASS',
+        status: r.status === 0 ? 'PASS' : 'FAIL',
+        evidence: r.status === 0 ? 'go test passed' : `go test failed: ${(r.stderr || r.stdout)?.slice(0, 200)}`,
+        durationMs: 0,
+      };
+    }
+    // Rust
+    if (existsSync(join(root, 'Cargo.toml'))) {
+      const r = spawnSync('cargo', ['test'], { cwd: root, encoding: 'utf8', shell: true, timeout: 120000 });
+      return {
+        gate: 'TEST_PASS',
+        status: r.status === 0 ? 'PASS' : 'FAIL',
+        evidence: r.status === 0 ? 'cargo test passed' : `cargo test failed: ${(r.stderr || r.stdout)?.slice(0, 200)}`,
+        durationMs: 0,
+      };
     }
     return { gate: 'TEST_PASS', status: 'INCONCLUSIVE' as const, evidence: 'No test runner configured', durationMs: 0 };
   });
@@ -172,20 +248,62 @@ async function testGate(root: string, env: BuildEnvironment): Promise<GateResult
 
 async function lintGate(root: string): Promise<GateResult> {
   return timed('LINT', () => {
-    // Try npx eslint or biome or tsc
-    const candidates = [
-      ['npx', 'eslint', '--max-warnings=0', '.'],
-      ['npx', 'biome', 'check', '.'],
-      ['npx', 'tsc', '--noEmit'],
-    ];
-    for (const [cmd, ...args] of candidates) {
-      const r = spawnSync(cmd as string, args, { cwd: root, encoding: 'utf8', shell: true });
-      if (r.status === 0) {
-        return { gate: 'LINT', status: 'PASS' as const, evidence: `${cmd} passed`, durationMs: 0 };
+    // Try eslint first (check if config exists)
+    const eslintConfigs = ['.eslintrc.js', '.eslintrc.cjs', '.eslintrc.json', '.eslintrc.yaml', '.eslintrc.yml', 'eslint.config.js', 'eslint.config.mjs', 'eslint.config.ts'];
+    const hasEslintConfig = eslintConfigs.some(cfg => existsSync(join(root, cfg)));
+    if (hasEslintConfig) {
+      const r = spawnSync('npx', ['eslint', '--max-warnings=0', '.'], { cwd: root, encoding: 'utf8', shell: true, timeout: 120000 });
+      // eslint not installed → INCONCLUSIVE, not FAIL
+      if (r.error || (r.stderr?.includes('not found') || r.stderr?.includes('ENOENT') || r.stderr?.includes('ERR! code'))) {
+        return { gate: 'LINT', status: 'INCONCLUSIVE' as const, evidence: 'ESLint config present but eslint not installed', durationMs: 0 };
       }
-      // If command not found, try next
-      if (r.error || (r.stderr?.includes('not found') || r.stderr?.includes('ENOENT'))) continue;
+      return {
+        gate: 'LINT',
+        status: r.status === 0 ? 'PASS' : 'FAIL',
+        evidence: r.status === 0 ? 'eslint passed' : `eslint failed: ${(r.stderr || r.stdout)?.slice(0, 200)}`,
+        durationMs: 0,
+      };
+    }
+    // Try biome
+    const hasBiomeConfig = existsSync(join(root, 'biome.json'));
+    if (hasBiomeConfig) {
+      const r = spawnSync('npx', ['biome', 'check', '.'], { cwd: root, encoding: 'utf8', shell: true, timeout: 120000 });
+      if (r.error || (r.stderr?.includes('not found') || r.stderr?.includes('ENOENT') || r.stderr?.includes('ERR! code'))) {
+        return { gate: 'LINT', status: 'INCONCLUSIVE' as const, evidence: 'Biome config present but biome not installed', durationMs: 0 };
+      }
+      return {
+        gate: 'LINT',
+        status: r.status === 0 ? 'PASS' : 'FAIL',
+        evidence: r.status === 0 ? 'biome passed' : `biome failed: ${(r.stderr || r.stdout)?.slice(0, 200)}`,
+        durationMs: 0,
+      };
+    }
+    // TypeScript: check for tsconfig
+    const hasTscConfig = existsSync(join(root, 'tsconfig.json'));
+    if (hasTscConfig) {
+      const r = spawnSync('npx', ['tsc', '--noEmit'], { cwd: root, encoding: 'utf8', shell: true, timeout: 120000 });
+      if (r.error || (r.stderr?.includes('not found') || r.stderr?.includes('ENOENT') || r.stderr?.includes('ERR! code'))) {
+        return { gate: 'LINT', status: 'INCONCLUSIVE' as const, evidence: 'tsconfig.json present but typescript not installed', durationMs: 0 };
+      }
+      return {
+        gate: 'LINT',
+        status: r.status === 0 ? 'PASS' : 'FAIL',
+        evidence: r.status === 0 ? 'tsc --noEmit passed' : `tsc failed: ${(r.stderr || r.stdout)?.slice(0, 200)}`,
+        durationMs: 0,
+      };
     }
     return { gate: 'LINT', status: 'INCONCLUSIVE' as const, evidence: 'No linter configured', durationMs: 0 };
   });
+}
+
+// ── Helpers ──
+
+/** Check if package.json has a specific script entry */
+function hasScript(root: string, scriptName: string): boolean {
+  try {
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+    return typeof pkg.scripts?.[scriptName] === 'string';
+  } catch {
+    return false;
+  }
 }

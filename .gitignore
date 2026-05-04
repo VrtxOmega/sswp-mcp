@@ -5,3 +5,7 @@ node_modules/
 *.db
 .vscode/
 .idea/
+
+# SSWP self-witness attestations (generated, not source)
+*.sswp.json
+.sswp.json

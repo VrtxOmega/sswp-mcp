@@ -20,12 +20,21 @@ export interface SswpAttestation {
   };
   dependencies: DependencyEntry[];
   gates: GateResult[];
+  /** Computed overall status: PASS (no FAILs, no INCONCLUSIVE), WARN (no FAILs, some INCONCLUSIVE), FAIL (any FAIL) */
+  overallStatus?: 'PASS' | 'WARN' | 'FAIL';
   adversarial: AdversarialReport;
   seal: {
     chainHash: string;
     sequence: number;
   };
-  signature: string; // sha256 of attestation JSON
+  /** Gap #4: VERITAS cross-system correlation ID (VT-YYYYMMDD-xxxxxxxx) */
+  traceId?: string;
+  /** Gap #3: Cortex governance state at time of witness */
+  governance?: {
+    cortexVerdict: 'APPROVED' | 'STEERED' | 'NOT_CHECKED';
+    cortexGoverned: boolean;
+  };
+  signature: string; // sha256 of attestation JSON (excludes signature field itself)
 }
 
 export interface DependencyEntry {
@@ -39,7 +48,7 @@ export interface DependencyEntry {
 
 export interface GateResult {
   gate: string;
-  status: 'PASS' | 'FAIL' | 'INCONCLUSIVE';
+  status: 'PASS' | 'FAIL' | 'INCONCLUSIVE' | 'WARN';
   evidence: string;
   durationMs: number;
 }

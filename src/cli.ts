@@ -20,10 +20,24 @@ async function main() {
   const [,, command, ...rest] = process.argv;
 
   if (command === 'witness') {
-    const projectRoot = resolve(rest[0] || process.cwd());
-    console.error(`\u2b21  SSWP — Witnessing ${projectRoot}...`);
+    // Parse --regime flag
+    let regime: 'developer' | 'ci' | 'strict' = 'developer';
+    const positional: string[] = [];
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === '--regime' && rest[i + 1]) {
+        const val = rest[i + 1];
+        if (val === 'developer' || val === 'ci' || val === 'strict') {
+          regime = val;
+          i++;
+          continue;
+        }
+      }
+      positional.push(rest[i]);
+    }
+    const projectRoot = resolve(positional[0] || process.cwd());
+    console.error(`\u2b21  SSWP — Witnessing ${projectRoot}... (regime: ${regime})`);
     
-    const att = await witness(projectRoot);
+    const att = await witness(projectRoot, regime);
     console.log(formatAttestation(att));
 
     // Write .sswp file
@@ -41,8 +55,8 @@ async function main() {
       console.error(`\u26a0 Registry append failed`);
     }
 
-    // Exit code: 0 if all gates pass, 1 if any fail
-    const failed = att.gates.some(g => g.status === 'FAIL');
+    // Exit code: 0 if overall PASS or WARN, 1 if FAIL
+    const failed = att.overallStatus === 'FAIL';
     process.exit(failed ? 1 : 0);
   }
 
