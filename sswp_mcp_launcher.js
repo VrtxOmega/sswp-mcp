@@ -48,5 +48,11 @@ if (fs.existsSync(BETTER_SQLITE3_PATH)) {
     }
 }
 
+// ══ Pin cwd to sswp-mcp root ══
+// dist/sswp.cjs resolves SCHEMA_PATH from process.cwd() ("src/sswp/registry/schema.sql").
+// Hermes spawns this launcher from gravity-omega-v2/, so without this chdir
+// the schema lookup fails with ENOENT and the MCP connection closes immediately.
+process.chdir(SCRIPT_DIR);
+
 // ══ Delegate to bundled CJS ══
 require(path.join(SCRIPT_DIR, 'dist', 'sswp.cjs'));
