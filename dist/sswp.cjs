@@ -22044,15 +22044,28 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const rawPath2 = args.repoPath;
     const traceId3 = args.traceId || "VT-UNTRACED";
     try {
-      const rows2 = REG.getHealthBoard();
+      const toExportRow = (node, att) => ({
+        name: node.name,
+        repo_path: node.repo_path,
+        node_type: node.node_type || "node",
+        last_status: att.overall_status,
+        overall_status: att.overall_status,
+        last_risk: att.risk_score,
+        last_adversarial: att.adversarial_risk,
+        last_run: att.run_at,
+        run_at: att.run_at
+      });
       let row2;
       if (rawPath2) {
         const wsl2 = toWslPath(rawPath2);
-        row2 = rows2.find((r) => r.repo_path === wsl2);
-        if (!row2) return mkText("No attestation found for: " + rawPath2, true);
+        const node = REG.getNodeByPath(wsl2);
+        const att = node ? REG.getLatestAttestation(node.node_id) : void 0;
+        if (!node || !att) return mkText("No attestation found for: " + rawPath2, true);
+        row2 = toExportRow(node, att);
       } else {
-        if (!rows2.length) return mkText("No attestations in registry.", true);
-        row2 = rows2[0];
+        const candidates = REG.listNodes().map((node) => ({ node, att: REG.getLatestAttestation(node.node_id) })).filter((entry) => entry.att).sort((a, b) => String(b.att.run_at).localeCompare(String(a.att.run_at)));
+        if (!candidates.length) return mkText("No attestations in registry.", true);
+        row2 = toExportRow(candidates[0].node, candidates[0].att);
       }
       const riskPct = row2.last_risk != null ? (row2.last_risk * 100).toFixed(1) + "%" : "N/A";
       const advPct  = row2.last_adversarial != null ? (row2.last_adversarial * 100).toFixed(1) + "%" : "N/A";
