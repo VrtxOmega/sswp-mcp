@@ -9,7 +9,8 @@ import { toWslPath } from "./path-util.js";
 import { kimiAnalyze } from "../core/kimi-reasoner.js";
 import type { DependencyEntry } from "../core/types.js";
 import { RegistryManager } from "../registry/manager.js";
-import { existsSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 
 const REG = new RegistryManager({ autoInit: true });
@@ -18,6 +19,24 @@ const server = new Server(
   { name: "sswp-mcp", version: "2.0.0" },
   { capabilities: { tools: {} } }
 );
+
+type CortexVerdict = "APPROVED" | "STEERED" | "NOT_CHECKED";
+
+function appendSharedEvent(traceId: string, eventType: string, payload: Record<string, unknown>): void {
+  try {
+    const sharedDir = resolve(homedir(), ".veritas-shared");
+    mkdirSync(sharedDir, { recursive: true });
+    appendFileSync(resolve(sharedDir, "events.jsonl"), JSON.stringify({
+      trace_id: traceId,
+      event_type: eventType,
+      source: "sswp",
+      payload,
+      timestamp: new Date().toISOString(),
+    }) + "\n");
+  } catch {
+    // Shared bus failures must not invalidate a cryptographic attestation.
+  }
+}
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
@@ -33,7 +52,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
       inputSchema: {
         type: "object",
-        properties: { repoPath: { type: "string", description: "Absolute path to the project root directory containing package.json and node_modules. The tool resolves WSL/Windows path translations automatically." } },
+        properties: {
+          repoPath: { type: "string", description: "Absolute path to the project root directory containing package.json and node_modules. The tool resolves WSL/Windows path translations automatically." },
+          traceId: { type: "string", description: "Optional VERITAS trace ID (VT-YYYYMMDD-xxxxxxxx) for cross-system correlation with Omega Brain SEAL chain and Stenographer. Obtain from omega_preload_context or veritas_bridge.get_or_create_trace()." },
+          cortexVerdict: { type: "string", enum: ["APPROVED", "STEERED", "NOT_CHECKED"], description: "Governance result from omega_cortex_check or omega_cortex_steer run before calling sswp_witness. Pass APPROVED or STEERED to confirm the Cortex gate was satisfied. Omitting this field flags the attestation as CORTEX_NOT_CHECKED in shared metadata." }
+        },
         required: ["repoPath"]
       }
     },
@@ -171,6 +194,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
         required: ["query"]
       }
+    },
+    {
+      name: "sswp_export_to_omega",
+      description:
+        "Format the most recent SSWP attestation, or a specified repo's attestation, as an omega_seal_run payload. Use this to chain sswp_witness evidence into Omega Brain SEAL without hand-writing the context.",
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      },
+      inputSchema: {
+        type: "object",
+        properties: {
+          repoPath: { type: "string", description: "Optional absolute path to the repo whose attestation to export. If omitted, exports the most recent attestation in the health board." },
+          traceId: { type: "string", description: "Optional VERITAS trace ID to embed in the seal context." }
+        }
+      }
     }
   ]
 }));
@@ -180,6 +221,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
   if (name === "sswp_witness") {
     const rawPath = (args as any).repoPath as string;
+    const cortexVerdict = ((args as any).cortexVerdict || "NOT_CHECKED") as CortexVerdict;
+    const traceId = ((args as any).traceId || "VT-UNTRACED") as string;
     const wslPath = toWslPath(rawPath);
     if (!existsSync(wslPath)) {
       return mkText("Repo not found: " + wslPath + " (from " + rawPath + ")", true);
@@ -198,7 +241,30 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       writeFileSync(jsonPath, rawJson);
       REG.saveAttestation(node.node_id, att, jsonPath, rawJson);
 
-      return mkText(formatAttestation(att) + "\n\n[REGISTRY] Saved attestation " + att.id, !ok);
+      appendSharedEvent(traceId, "SSWP_WITNESS_COMPLETE", {
+        target: att.target.name,
+        repo: att.target.repo,
+        commit: att.target.commitHash ? att.target.commitHash.slice(0, 8) : "unknown",
+        overall_status: ok ? "PASS" : "FAIL",
+        adversarial_risk: att.adversarial.overallRisk,
+        adversarial_risk_pct: (att.adversarial.overallRisk * 100).toFixed(1) + "%",
+        gates_passed: att.gates.filter(g => g.status === "PASS").length,
+        gates_total: att.gates.length,
+        signature: att.signature ? att.signature.slice(0, 16) : "",
+        cortex_verdict: cortexVerdict,
+        cortex_governed: cortexVerdict !== "NOT_CHECKED",
+      });
+      if (cortexVerdict === "NOT_CHECKED") {
+        appendSharedEvent(traceId, "SSWP_CORTEX_NOT_CHECKED", {
+          repo: att.target.repo,
+          note: "sswp_witness called without prior omega_cortex_check",
+        });
+      }
+
+      const cortexNote = cortexVerdict === "NOT_CHECKED"
+        ? "\n\n⚠ CORTEX NOT CHECKED — Call omega_cortex_check before sswp_witness for governed attestation."
+        : "\n\n✓ Cortex: " + cortexVerdict;
+      return mkText(formatAttestation(att) + "\n\n[REGISTRY] Saved attestation " + att.id + cortexNote, !ok);
     } catch (err: any) {
       return mkText("SSWP ERROR: " + (err.message || String(err)), true);
     }
@@ -339,6 +405,59 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       lines.push(`${name}  ${type}  ${status}  ${r.repo_path}`);
     }
     return mkText(lines.join("\n"), false);
+  }
+
+  if (name === "sswp_export_to_omega") {
+    const rawPath = (args as any).repoPath as string | undefined;
+    const traceId = ((args as any).traceId || "VT-UNTRACED") as string;
+    try {
+      const rows = REG.getHealthBoard();
+      let row: any;
+      if (rawPath) {
+        const wsl = toWslPath(rawPath);
+        row = rows.find((r: any) => r.repo_path === wsl);
+        if (!row) return mkText("No attestation found for: " + rawPath, true);
+      } else {
+        if (!rows.length) return mkText("No attestations in registry.", true);
+        row = rows[0];
+      }
+      const riskPct = row.last_risk != null ? (row.last_risk * 100).toFixed(1) + "%" : "N/A";
+      const advPct = row.last_adversarial != null ? (row.last_adversarial * 100).toFixed(1) + "%" : "N/A";
+      const sealPayload = {
+        context: {
+          event_type: "SSWP_WITNESS",
+          source: "sswp",
+          trace_id: traceId,
+          node: row.name,
+          repo_path: row.repo_path,
+          status: row.last_status || row.overall_status || "UNKNOWN",
+          risk_score: row.last_risk || 0,
+          adversarial_risk: row.last_adversarial || 0,
+          last_run: row.last_run || row.run_at,
+          node_type: row.node_type || "node",
+        },
+        response: (
+          "SSWP attestation — " + row.name +
+          " | Status: " + (row.last_status || row.overall_status || "UNKNOWN") +
+          " | Risk: " + riskPct +
+          " | Adversarial: " + advPct +
+          " | Run: " + (row.last_run || row.run_at || "unknown") +
+          " | TraceID: " + traceId
+        )
+      };
+      const output = (
+        "# omega_seal_run payload — ready to use\n\n" +
+        "Call omega_seal_run with these exact arguments:\n\n" +
+        JSON.stringify(sealPayload, null, 2) +
+        "\n\n# Quick chain:\n" +
+        "1. sswp_witness  →  repoPath: " + (rawPath || row.repo_path) + "\n" +
+        "2. sswp_export_to_omega  →  (just ran)\n" +
+        "3. omega_seal_run  →  context: <above>, response: <above>"
+      );
+      return mkText(output, false);
+    } catch (err: any) {
+      return mkText("EXPORT ERROR: " + (err.message || String(err)), true);
+    }
   }
 
   return mkText("Unknown tool: " + name, true);
