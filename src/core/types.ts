@@ -39,7 +39,7 @@ export interface DependencyEntry {
 
 export interface GateResult {
   gate: string;
-  status: 'PASS' | 'FAIL' | 'INCONCLUSIVE';
+  status: 'PASS' | 'FAIL' | 'INCONCLUSIVE' | 'ERROR' | 'NOT_APPLICABLE';
   evidence: string;
   durationMs: number;
 }

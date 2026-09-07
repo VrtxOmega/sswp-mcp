@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "builder": {
+    "esbuild": "0.28.2",
+    "node": "v24.19.0"
+  },
+  "bundleSha256": "e10abca159ad32839fe3dfa2879b05df024734e2efdc6e47bbe86a3e6fb33090",
+  "lockSha256": "3eab7a2655081d1604ccffb9efca0b737680bbe4c40a45ca48a7f2be7c446041",
+  "sourceHashes": {
+    "build.mjs": "390ebb849e39d94035bcbef4f9d3fd9d78a11d4eb420f84a0578086fef8f0ad4",
+    "package.json": "4cb1b22c78c9475f937233067ee9c250254085a8504abb4198e827905d1b0ad6",
+    "tsconfig.json": "7c89c6eeb797caa10be68ae23dc9785016f41966cd933978c91f691bee995523",
+    "src/registry/schema.sql": "5702b1badeea63ea8e72184623d7264cf2bff05914cb681898f9107c25b7587d",
+    "src/core/source-state.ts": "57a6aec6e155f2260a2e55a274702e82dea88222c00a261e25baf35dc2a49879",
+    "src/core/integrity.ts": "e292b38bb14d24c61f318ea2019eca7548cac82ad4984bb5f90d42b72510a5ac",
+    "src/registry/manager.ts": "1240a8b110903478553e4736233e3083b6ba4333353b0d309fea936927492968",
+    "src/core/gate-runner.ts": "65956e4855a168a3c8b2d717b0c5bf159a9baa503d2a126d58cc3ef8d95ecdfd",
+    "src/core/witness.ts": "d927a105d32845939d8eff1f047ca198eb78d035682d4b80d02c2ae6a17d06d0",
+    "src/mcp/server.ts": "3d7231bb29690032e3653c17a75a6e00217ebeeff244350460184a85eaba678e",
+    "src/cli.ts": "9cc5cb71fe20e9beef46ac7ea23ff195506860e1575691e16b3821cab14e4cff"
+  },
+  "artifacts": {
+    "sswp.cjs": "e10abca159ad32839fe3dfa2879b05df024734e2efdc6e47bbe86a3e6fb33090",
+    "sswp-cli.cjs": "1685b1b5200debae0815a7362f8a9cff43b49364d79b6fe7377a7dbd055ee5f3",
+    "witness-test.cjs": "8074fa623d92a0c39f4a43db15f6aa023add338fe284a0e70102102302aa51f1",
+    "gates-test.cjs": "7d017e3fa933f26e841fa5971eb86ee72e8f47f6486489efb13ccd42ed602925",
+    "integrity-test.cjs": "722612fb07ae5a38971c667ef9bb4fe29d8013e08ad57f152cb4d3224fcaa3ce",
+    "registry-test.cjs": "1c7c9262fee7ae69adc9536b098e4e3ed7cf38ab2b9343d51518382c5cb539ac",
+    "source-test.cjs": "bbb54a8f685a2593be4bc4168db492a8ef59aa9606fae7be17cbab45f033dbe7"
+  },
+  "identicalBuilds": true,
+  "scope": "Each bundle built twice from identical inputs; independent-directory reproducibility is a separate gate"
+}

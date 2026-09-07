@@ -1,191 +1,76 @@
-// src/sswp/core/gate-runner.ts
-/** Runs VERITAS-style deterministic gates on a build */
-
-import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-import type { GateResult, BuildEnvironment } from './types.js';
-
-export async function runGates(projectRoot: string, env: BuildEnvironment): Promise<GateResult[]> {
-  const results: GateResult[] = [];
-
-  // Gate 0: Language detection — polyglot support (Node, Python, Go, Rust, HTML)
-  results.push(await languageDetectionGate(projectRoot));
-
-  // Gate 1: Source Integrity — repo has clean working tree
-  results.push(await gitIntegrityGate(projectRoot));
-  
-  // Gate 2: Dependency Lock — lockfile matches package.json (or equivalent)
-  results.push(await lockfileGate(projectRoot));
-
-  // Gate 3: Deterministic Build — build produces identical output hash
-  results.push(await deterministicBuildGate(projectRoot, env));
-
-  // Gate 4: Test Pass — all tests pass
-  results.push(await testGate(projectRoot, env));
-
-  // Gate 5: Lint — no lint errors
-  results.push(await lintGate(projectRoot));
-
-  return results;
-}
-
-// ── Gate 0: Language Detection ──
-
-function languageDetectionGate(root: string): GateResult {
-  const start = Date.now();
-  const languages: string[] = [];
-  
-  if (existsSync(join(root, 'package.json'))) languages.push('node');
-  if (existsSync(join(root, 'requirements.txt')) || existsSync(join(root, 'pyproject.toml')) || existsSync(join(root, 'setup.py'))) languages.push('python');
-  if (existsSync(join(root, 'go.mod'))) languages.push('go');
-  if (existsSync(join(root, 'Cargo.toml'))) languages.push('rust');
-  if (existsSync(join(root, 'index.html')) && !existsSync(join(root, 'package.json'))) languages.push('html');
-  if (!languages.length) languages.push('unknown');
-  
-  return {
-    gate: 'LANGUAGE_DETECTION',
-    status: 'PASS',
-    evidence: `Detected: ${languages.join(', ')}`,
-    durationMs: Date.now() - start,
-  };
-}
-
-// ── Gate 2: Dependency Lock (polyglot) ──
-
-async function lockfileGate(root: string): Promise<GateResult> {
-  return timed('LOCKFILE', () => {
-    // Node.js
-    if (existsSync(join(root, 'package.json'))) {
-      const hasLock = existsSync(join(root, 'package-lock.json')) || existsSync(join(root, 'yarn.lock')) || existsSync(join(root, 'pnpm-lock.yaml'));
-      if (!hasLock) return { gate: 'LOCKFILE', status: 'FAIL' as const, evidence: 'package.json present but no lockfile (package-lock.json, yarn.lock, or pnpm-lock.yaml)', durationMs: 0 };
-      return { gate: 'LOCKFILE', status: 'PASS' as const, evidence: 'Lockfile present', durationMs: 0 };
-    }
-    // Python
-    if (existsSync(join(root, 'requirements.txt'))) {
-      return { gate: 'LOCKFILE', status: 'PASS' as const, evidence: 'requirements.txt (pinned dependencies)', durationMs: 0 };
-    }
-    if (existsSync(join(root, 'pyproject.toml'))) {
-      const hasPoetryLock = existsSync(join(root, 'poetry.lock'));
-      const hasUvLock = existsSync(join(root, 'uv.lock'));
-      return {
-        gate: 'LOCKFILE', 
-        status: (hasPoetryLock || hasUvLock) ? 'PASS' as const : 'WARN' as const,
-        evidence: hasPoetryLock ? 'poetry.lock present' : hasUvLock ? 'uv.lock present' : 'pyproject.toml present but no lockfile',
-        durationMs: 0,
-      };
-    }
-    // Go
-    if (existsSync(join(root, 'go.mod'))) {
-      const hasSum = existsSync(join(root, 'go.sum'));
-      return { gate: 'LOCKFILE', status: hasSum ? 'PASS' as const : 'WARN' as const, evidence: hasSum ? 'go.sum present' : 'go.mod present but no go.sum', durationMs: 0 };
-    }
-    // Rust
-    if (existsSync(join(root, 'Cargo.toml'))) {
-      const hasCargoLock = existsSync(join(root, 'Cargo.lock'));
-      return { gate: 'LOCKFILE', status: hasCargoLock ? 'PASS' as const : 'WARN' as const, evidence: hasCargoLock ? 'Cargo.lock present' : 'Cargo.toml present but no Cargo.lock', durationMs: 0 };
-    }
-    // HTML / static
-    if (existsSync(join(root, 'index.html')) && !existsSync(join(root, 'package.json'))) {
-      return { gate: 'LOCKFILE', status: 'PASS' as const, evidence: 'Static site (no dependency manager)', durationMs: 0 };
-    }
-    return { gate: 'LOCKFILE', status: 'INCONCLUSIVE' as const, evidence: 'No recognized project type', durationMs: 0 };
+import {spawn} from 'node:child_process';
+import {existsSync,realpathSync,mkdtempSync,rmSync,mkdirSync,lstatSync,readdirSync,readFileSync} from 'node:fs';
+import {join,resolve,isAbsolute,relative,sep} from 'node:path';
+import {tmpdir} from 'node:os';
+import {createHash} from 'node:crypto';
+import {copySources,sourceIdentity} from './source-state.js';
+import type {GateResult,BuildEnvironment} from './types.js';
+export async function runCommand(command:string,args:string[],cwd:string,timeout=60000,env:Record<string,string>={}):Promise<{status:number|null,stdout:string,stderr:string,error?:string}> {
+  return new Promise(resolve=>{
+    const child=spawn(command,args,{cwd,shell:false,windowsHide:true,detached:process.platform!=='win32',env:{...process.env,...env}});
+    let stdout='',stderr='',settled=false,timedOut=false;
+    const finish=(value:any)=>{if(!settled){settled=true;clearTimeout(timer);resolve(value);}};
+    const timer=setTimeout(()=>{
+      timedOut=true;
+      if(process.platform==='win32'&&child.pid){const killer=spawn('taskkill',['/PID',String(child.pid),'/T','/F'],{windowsHide:true});killer.on('error',()=>child.kill());}
+      else if(child.pid){try{process.kill(-child.pid,'SIGKILL');}catch{child.kill('SIGKILL');}}
+    },Math.max(50,Math.min(timeout,300000)));
+    child.stdout?.on('data',d=>{stdout=(stdout+d).slice(-65536);});child.stderr?.on('data',d=>{stderr=(stderr+d).slice(-65536);});
+    child.on('error',e=>finish({status:null,stdout,stderr,error:e.message}));child.on('close',status=>finish({status,stdout,stderr,...(timedOut?{error:'TIMEOUT'}:{})}));
   });
 }
-
-function timed(name: string, fn: () => GateResult): GateResult {
-  const start = Date.now();
-  const result = fn();
-  result.durationMs = Date.now() - start;
-  result.gate = name;
-  return result;
+const result=(gate:string,status:GateResult['status'],evidence:string,durationMs=0):GateResult=>({gate,status,evidence,durationMs});
+export async function gitIntegrityGate(root:string):Promise<GateResult> {
+  const start=Date.now();const r=await runCommand('git',['status','--porcelain=v1','--untracked-files=all'],root,10000);
+  if(r.error||r.status!==0)return result('GIT_INTEGRITY','ERROR',r.error||r.stderr||`git exit ${r.status}`,Date.now()-start);
+  return result('GIT_INTEGRITY',r.stdout.trim()?'FAIL':'PASS',r.stdout.trim()?'Working tree has changes':'Git command succeeded; working tree clean',Date.now()-start);
+}
+export function lockfileGate(root:string):GateResult {
+  if(!existsSync(join(root,'package.json'))){
+    const locks=['uv.lock','poetry.lock','Pipfile.lock','Cargo.lock','go.sum'].filter(f=>existsSync(join(root,f)));
+    return result('LOCKFILE_PRESENT',locks.length?'PASS':'NOT_APPLICABLE',locks.length?`${locks.join(', ')} present; content consistency not established`:'No supported lockfile ecosystem detected');
+  }
+  const locks=['package-lock.json','pnpm-lock.yaml','yarn.lock'].filter(f=>existsSync(join(root,f)));
+  return result('LOCKFILE_PRESENT',locks.length===1?'PASS':locks.length?'INCONCLUSIVE':'FAIL',locks.length===1?`${locks[0]} present; consistency not established`:locks.length?'Multiple lockfiles; package manager selection required':'No lockfile');
+}
+export async function runGates(root:string,_env:BuildEnvironment,policy:any={}):Promise<GateResult[]> {
+  const output=[await gitIntegrityGate(root),lockfileGate(root)];
+  const profile=policy.projects?.[realpathSync(root).replaceAll('\\','/')]||{};
+  for(const [gate,key] of [['BUILD_SUCCESS','build'],['TEST_PASS','test'],['LINT','lint']]){
+    const command=profile[key];
+    if(!command){output.push(result(gate,'INCONCLUSIVE','No explicit operator command configured'));continue;}
+    if(!Array.isArray(command.argv)||!command.argv.length||command.argv.some((a:any)=>typeof a!=='string')){output.push(result(gate,'ERROR','Invalid operator command'));continue;}
+    const start=Date.now();const r=await runCommand(command.argv[0],command.argv.slice(1),root,command.timeoutMs||60000);
+    output.push(result(gate,r.error?'ERROR':r.status===0?'PASS':'FAIL',r.error||`exit=${r.status}; ${(r.stdout+'\n'+r.stderr).slice(-8000)}`,Date.now()-start));
+  }
+  output.push(await reproducibleBuildGate(root,profile.reproducible));
+  return output;
 }
 
-async function gitIntegrityGate(root: string): Promise<GateResult> {
-  return timed('GIT_INTEGRITY', () => {
-    const r = spawnSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' });
-    const clean = !r.stdout?.trim();
-    return {
-      gate: 'GIT_INTEGRITY',
-      status: clean ? 'PASS' : 'FAIL',
-      evidence: clean ? 'Working tree clean' : `Modified files: ${r.stdout?.trim().split('\n').length}`,
-      durationMs: 0,
-    };
-  });
+function outputManifest(root:string,outputs:string[]) {
+  const manifest:Record<string,string>={};
+  const walk=(p:string)=>{const stat=lstatSync(p);if(stat.isSymbolicLink())throw Error('Output symlinks are not supported');if(stat.isDirectory()){for(const name of readdirSync(p).sort())walk(join(p,name));}else if(stat.isFile())manifest[relative(root,p).replaceAll('\\','/')]=createHash('sha256').update(readFileSync(p)).digest('hex');};
+  for(const output of outputs){const target=resolve(root,output);if(isAbsolute(output)||!target.startsWith(resolve(root)+sep))throw Error('Output must be inside build directory');walk(target);}
+  return Object.fromEntries(Object.entries(manifest).sort(([a],[b])=>a.localeCompare(b)));
 }
-
-async function deterministicBuildGate(root: string, env: BuildEnvironment): Promise<GateResult> {
-  return timed('DETERMINISTIC_BUILD', () => {
-    const buildCandidates = [
-      { check: 'package.json', cmd: ['npm', 'run', 'build'] },
-      { check: 'Makefile', cmd: ['make'] },
-      { check: 'pyproject.toml', cmd: ['python3', '-m', 'build'] },
-      { check: 'go.mod', cmd: ['go', 'build', './...'] },
-      { check: 'Cargo.toml', cmd: ['cargo', 'build'] },
-      { check: 'index.html', cmd: ['echo', 'static'] },  // static sites pass
-    ];
-    for (const { check, cmd } of buildCandidates) {
-      if (existsSync(join(root, check))) {
-        if (check === 'index.html' && !existsSync(join(root, 'package.json'))) {
-          return { gate: 'DETERMINISTIC_BUILD', status: 'PASS' as const, evidence: 'Static HTML site (no build required)', durationMs: 0 };
-        }
-        const r = spawnSync(cmd[0], cmd.slice(1), { cwd: root, encoding: 'utf8', shell: true, timeout: 60000 });
-        const passed = r.status === 0;
-        return {
-          gate: 'DETERMINISTIC_BUILD',
-          status: passed ? 'PASS' : 'FAIL',
-          evidence: passed ? `Build succeeded: ${cmd.join(' ')}` : `Build failed: ${r.stderr?.slice(0, 200)}`,
-          durationMs: 0,
-        };
-      }
+export async function reproducibleBuildGate(root:string,profile:any):Promise<GateResult> {
+  if(!profile)return result('REPRODUCIBLE_BUILD','INCONCLUSIVE','No independent-build profile configured');
+  if(!Array.isArray(profile.outputs)||!profile.outputs.length||!Array.isArray(profile.argv)||!profile.argv.length)return result('REPRODUCIBLE_BUILD','ERROR','Explicit argv and output paths are required');
+  const start=Date.now(),base=mkdtempSync(join(tmpdir(),'sswp-repeat-')),manifests=[];
+  try {
+    const source=sourceIdentity(root);
+    for(let i=0;i<2;i++){
+      const dest=join(base,String(i));mkdirSync(dest);copySources(root,dest);
+      // Remove declared build outputs from the copied input so a no-op command
+      // cannot pass by comparing two copies of pre-existing artifacts.
+      for(const out of profile.outputs){const target=resolve(dest,out);if(typeof out!=='string'||isAbsolute(out)||!target.startsWith(resolve(dest)+sep))throw Error('Output escapes isolated build');if(existsSync(target))rmSync(target,{recursive:true,force:true});}
+      const commands=[...(profile.setup||[]),{argv:profile.argv,timeoutMs:profile.timeoutMs}];
+      for(const command of commands){if(!Array.isArray(command.argv)||!command.argv.length||command.argv.some((x:any)=>typeof x!=='string'))throw Error('Invalid independent-build command');const run=await runCommand(command.argv[0],command.argv.slice(1),dest,command.timeoutMs||60000,{TZ:'UTC',SOURCE_DATE_EPOCH:'0',...(profile.env||{})});if(run.error||run.status!==0)return result('REPRODUCIBLE_BUILD',run.error?'ERROR':'FAIL',`Independent build ${i+1}: ${run.error||run.stderr||run.stdout||run.status}`,Date.now()-start);}
+      const manifest=outputManifest(dest,profile.outputs);if(!Object.keys(manifest).length)throw Error('No output files produced');manifests.push(manifest);
     }
-    return { gate: 'DETERMINISTIC_BUILD', status: 'INCONCLUSIVE' as const, evidence: 'No recognized build system', durationMs: 0 };
-  });
-}
-
-async function testGate(root: string, env: BuildEnvironment): Promise<GateResult> {
-  return timed('TEST_PASS', () => {
-    const testCandidates = [
-      { check: 'package.json', cmd: ['npm', 'test'] },
-      { check: 'Makefile', cmd: ['make', 'test'] },
-      { check: 'pyproject.toml', cmd: ['python3', '-m', 'pytest'] },
-      { check: 'go.mod', cmd: ['go', 'test', './...'] },
-      { check: 'Cargo.toml', cmd: ['cargo', 'test'] },
-    ];
-    for (const { check, cmd } of testCandidates) {
-      if (existsSync(join(root, check))) {
-        const r = spawnSync(cmd[0], cmd.slice(1), { cwd: root, encoding: 'utf8', shell: true, timeout: 120000 });
-        const passed = r.status === 0;
-        if (passed) return { gate: 'TEST_PASS', status: 'PASS' as const, evidence: `${cmd.join(' ')} passed`, durationMs: 0 };
-        // Command failed but it was the right test runner
-        return {
-          gate: 'TEST_PASS',
-          status: 'FAIL',
-          evidence: `${cmd.join(' ')} failed: ${(r.stderr || r.stdout)?.slice(0, 200)}`,
-          durationMs: 0,
-        };
-      }
-    }
-    return { gate: 'TEST_PASS', status: 'INCONCLUSIVE' as const, evidence: 'No test runner configured', durationMs: 0 };
-  });
-}
-
-async function lintGate(root: string): Promise<GateResult> {
-  return timed('LINT', () => {
-    // Try npx eslint or biome or tsc
-    const candidates = [
-      ['npx', 'eslint', '--max-warnings=0', '.'],
-      ['npx', 'biome', 'check', '.'],
-      ['npx', 'tsc', '--noEmit'],
-    ];
-    for (const [cmd, ...args] of candidates) {
-      const r = spawnSync(cmd as string, args, { cwd: root, encoding: 'utf8', shell: true });
-      if (r.status === 0) {
-        return { gate: 'LINT', status: 'PASS' as const, evidence: `${cmd} passed`, durationMs: 0 };
-      }
-      // If command not found, try next
-      if (r.error || (r.stderr?.includes('not found') || r.stderr?.includes('ENOENT'))) continue;
-    }
-    return { gate: 'LINT', status: 'INCONCLUSIVE' as const, evidence: 'No linter configured', durationMs: 0 };
-  });
+    if(sourceIdentity(root)!==source)return result('REPRODUCIBLE_BUILD','ERROR','Source changed while independent builds ran',Date.now()-start);
+    const match=JSON.stringify(manifests[0])===JSON.stringify(manifests[1]);
+    return result('REPRODUCIBLE_BUILD',match?'PASS':'FAIL',JSON.stringify({source_sha256:source,matching:match,manifests,scope:'Two separate source copies on this host with explicit commands; not a hermetic environment or cross-host proof'}),Date.now()-start);
+  }catch(e){return result('REPRODUCIBLE_BUILD','ERROR',String(e),Date.now()-start);}
+  finally{const safe=realpathSync(base);if(safe.startsWith(realpathSync(tmpdir())+sep)&&safe.includes('sswp-repeat-'))rmSync(safe,{recursive:true,force:true});}
 }

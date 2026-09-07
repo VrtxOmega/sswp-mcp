@@ -1,7 +1,7 @@
 {
   "name": "sswp-mcp",
-  "version": "2.0.0",
-  "description": "Sovereign Software Witness Protocol — MCP Server. Deterministic attestation, adversarial probing, and tamper-proof sealing for the VERITAS ecosystem.",
+  "version": "2.1.0",
+  "description": "Task-scoped software evidence with explicit gate results and versioned local integrity records.",
   "type": "commonjs",
   "main": "dist/sswp.cjs",
   "bin": {
@@ -10,21 +10,36 @@
   "scripts": {
     "start": "node dist/sswp.cjs",
     "cli": "node dist/sswp-cli.cjs",
-    "build": "echo 'dist/ pre-compiled — no build step required'"
+    "build": "node build.mjs",
+    "check": "tsc --noEmit",
+    "test": "node --test tests/*.test.cjs"
   },
-  "keywords": ["mcp", "ai", "veritas", "attestation", "witness", "deterministic-build", "sswp"],
+  "keywords": [
+    "mcp",
+    "ai",
+    "veritas",
+    "attestation",
+    "witness",
+    "deterministic-build",
+    "sswp"
+  ],
   "author": "RJ <rj@veritas.engineering>",
   "license": "MIT",
   "engines": {
-    "node": ">=18"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": ["better-sqlite3"]
+    "node": ">=22"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "ajv": "^8.0.0",
     "ajv-formats": "^3.0.0",
-    "better-sqlite3": "^12.9.0"
-  }
+    "better-sqlite3": "^12.9.0",
+    "yaml": "2.8.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.4.1",
+    "esbuild": "^0.28.2",
+    "typescript": "^6.0.3"
+  },
+  "packageManager": "pnpm@11.19.0"
 }
