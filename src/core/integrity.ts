@@ -39,7 +39,14 @@ export function consumeApproval(tool:string,args:any,receipt:any,taskId:string) 
   const shared=sharedPath(),policyBytes=readFileSync(join(shared,'operator-policy.json')),policy=JSON.parse(policyBytes.toString());
   const real=realpathSync(args.repoPath).replaceAll('\\','/');
   const pathkey=(p:string)=>process.platform==='win32'?p.toLowerCase():p;
-  const allowed=(policy.witness_roots||[]).map((p:string)=>pathkey(realpathSync(p).replaceAll('\\','/')));
+  const allowed=(policy.witness_roots||[]).flatMap((p:string)=>{
+    try{return [pathkey(realpathSync(p).replaceAll('\\','/'))];}
+    catch(error){
+      // An absent unrelated root never expands policy or rejects a present root.
+      if(['ENOENT','ENOTDIR','EACCES','EPERM'].includes((error as NodeJS.ErrnoException).code||''))return [];
+      throw error;
+    }
+  });
   if(!allowed.includes(pathkey(real)))throw Error('Project is not registered in operator policy');
   const key=readFileSync(join(shared,'approval.key')),expected=createHmac('sha256',key).update(canonical(receipt.payload)).digest();
   const actual=Buffer.from(receipt.mac,'hex');if(actual.length!==expected.length||!timingSafeEqual(actual,expected))throw Error('Invalid approval MAC');
