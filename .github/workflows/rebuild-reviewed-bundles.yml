@@ -1,0 +1,66 @@
+name: Rebuild reviewed bundles
+on:
+  push:
+    branches: [fix/scoped-runtime-2026-09]
+    paths: [.github/workflows/rebuild-reviewed-bundles.yml]
+permissions:
+  contents: write
+jobs:
+  rebuild:
+    if: github.repository == 'VrtxOmega/sswp-mcp' && github.ref == 'refs/heads/fix/scoped-runtime-2026-09'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: sswp
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: VrtxOmega/omega-brain-mcp
+          ref: 900a061e1f714a47f90d0f233bc4c71f8d707f9e
+          path: omega-brain
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: VrtxOmega/omega-stenographer-mcp
+          ref: 1779c98422942a5a0045e21b1da7841085ed0095
+          path: omega-stenographer
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m venv .venv
+      - run: .venv/Scripts/python -m pip install -r omega-brain/requirements.txt
+      - run: npm install -g pnpm@11.19.0
+      - run: pnpm --dir sswp install --frozen-lockfile
+      - run: pnpm --dir sswp check
+      - run: pnpm --dir sswp build
+      - run: node sswp/scripts/verify-build-receipt.cjs
+      - run: pnpm --dir sswp test
+      - name: Cross-system replay and protocol tests
+        run: |
+          $env:OMEGA_SUITE_ROOT = $PWD.Path
+          .venv/Scripts/python omega-brain/integration-tests/test_runtime.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .venv/Scripts/python omega-brain/integration-tests/test_mcp_flow.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+        env:
+          PYTHONUTF8: '1'
+      - name: Commit validated artifacts to the reviewed branch
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const files = ['build-receipt.json','sswp.cjs','sswp-cli.cjs','witness-test.cjs','gates-test.cjs','integrity-test.cjs','registry-test.cjs','source-test.cjs'];
+            const input = {
+              branch: {repositoryNameWithOwner: `${context.repo.owner}/${context.repo.repo}`, branchName: context.ref.replace('refs/heads/','')},
+              expectedHeadOid: context.sha,
+              message: {headline: 'Regenerate complete bundles and receipt from tested committed source'},
+              fileChanges: {additions: files.map(p=>({path:`dist/${p}`,contents:fs.readFileSync(`sswp/dist/${p}`).toString('base64')}))}
+            };
+            const result = await github.graphql('mutation($input:CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid url}}}',{input});
+            core.notice(JSON.stringify(result.createCommitOnBranch.commit));
