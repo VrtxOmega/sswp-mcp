@@ -2,13 +2,15 @@
 /** SSWP Registry Manager — SQLite-backed with FTS5, ledger, Omega Brain bridge */
 
 import Database from "better-sqlite3";
+import schemaSql from "./schema.sql";
+import {appendLedger as appendV2,verifyLedger as verifyV2,initLedger,canonical,deliverOutbox} from "../core/integrity.js";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { SswpAttestation, GateResult, DependencyEntry } from "../core/types.js";
 
 const SCHEMA_PATH = resolve(process.cwd(), "src/sswp/registry/schema.sql");
-const DEFAULT_DB = resolve(process.env.HOME ?? "/tmp", ".sswp_registry.sqlite");
+const DEFAULT_DB = process.env.SSWP_DB || resolve(require("node:os").homedir(), ".sswp_registry.sqlite");
 
 export interface RegistryConfig {
   dbPath?: string;
@@ -52,7 +54,7 @@ export interface LedgerEntry {
 }
 
 export class RegistryManager {
-  private db: Database.Database;
+  public db: Database.Database;
   private dbPath: string;
 
   constructor(cfg: RegistryConfig = {}) {
@@ -66,8 +68,13 @@ export class RegistryManager {
   }
 
   initSchema() {
-    const sql = readFileSync(SCHEMA_PATH, "utf-8");
+    const sql = schemaSql;
     this.db.exec(sql);
+    this.db.pragma('busy_timeout=30000');
+    this.db.exec('CREATE TABLE IF NOT EXISTS event_outbox(id TEXT PRIMARY KEY,task_id TEXT NOT NULL,event_type TEXT NOT NULL,payload TEXT NOT NULL,created_at TEXT NOT NULL,delivered INTEGER DEFAULT 0)');
+    initLedger(this.db);
+    if(!this.db.prepare('SELECT 1 FROM ledger_v2 LIMIT 1').get())appendV2(this.db,'MIGRATION_READY',{version:2});
+
   }
 
   close() {
@@ -79,7 +86,7 @@ export class RegistryManager {
   // ═══════════════════════════════════════════════════════════════
 
   upsertNode(node: Partial<NodeRecord> & { name: string; repo_path: string }): NodeRecord {
-    const id = node.node_id ?? randomUUID();
+    const id = node.node_id ?? this.getNodeByPath(node.repo_path)?.node_id ?? randomUUID();
     const now = new Date().toISOString();
     const tagsJson = node.tags ? JSON.stringify(node.tags) : null;
     const metaJson = node.metadata ? JSON.stringify(node.metadata) : null;
@@ -163,36 +170,20 @@ export class RegistryManager {
 
   saveAttestation(nodeId: string, att: SswpAttestation, jsonPath: string, rawJson: string): AttestationRecord {
     const id = att.id ?? randomUUID();
-    const passCount = att.gates.filter(g => g.status === "PASS").length;
-    const failCount = att.gates.length - passCount;
-    const overall = failCount === 0 ? "PASS" : (passCount > 0 ? "PARTIAL" : "FAIL");
-    const hash = createHash("sha256").update(rawJson).digest("hex");
-
-    const stmt = this.db.prepare(`
-      INSERT INTO attestations
-        (attestation_id, node_id, overall_status, risk_score, adversarial_risk,
-         gate_pass_count, gate_fail_count, sha256, sswp_json_path, raw_json, metadata)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      RETURNING *
-    `);
-    const row = stmt.get(
-      id, nodeId, overall,
-      att.adversarial?.overallRisk ?? 0,
-      att.adversarial?.overallRisk ?? 0,
-      passCount, failCount,
-      hash, jsonPath, rawJson,
-      JSON.stringify({ tool: "sswp_witness", version: "1.0.0" })
-    ) as Record<string, unknown>;
-
-    // Save gate history
-    for (const g of att.gates) {
-      this.saveGateHistory(id, nodeId, g);
-    }
-
-    // Ledger entry
-    this.appendLedger("WITNESS", { attestationId: id, nodeId, overall, risk: att.adversarial?.overallRisk });
-
-    return row as unknown as AttestationRecord;
+    return this.db.transaction(()=>{
+      const passCount=att.gates.filter(g=>g.status==='PASS').length;
+      const failCount=att.gates.filter(g=>g.status==='FAIL'||g.status==='ERROR').length;
+      const overall=att.gates.some(g=>g.status==='ERROR')?'ERROR':failCount?'FAIL':att.gates.some(g=>g.status==='INCONCLUSIVE')?'INCONCLUSIVE':passCount?'PASS':'NOT_APPLICABLE';
+      const row=this.db.prepare('INSERT INTO attestations(attestation_id,node_id,run_at,overall_status,risk_score,adversarial_risk,gate_pass_count,gate_fail_count,sha256,sswp_json_path,raw_json,metadata) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *').get(id,nodeId,att.timestamp,overall,att.adversarial?.overallRisk??0,att.adversarial?.overallRisk??0,passCount,failCount,createHash('sha256').update(rawJson).digest('hex'),jsonPath,rawJson,JSON.stringify({version:2,materialization:'pending',assessment:'risk scores are not safety probabilities'}));
+      for(const g of att.gates)this.saveGateHistory(id,nodeId,g);
+      for(const d of att.dependencies)this.saveDepSnapshot(id,nodeId,d);
+      const taskId=(att as any).taskId;
+      if(!taskId)throw Error('taskId required');
+      const payload={attestation_id:id,node_id:nodeId,signature:att.signature,overall,repo:att.target.repo};
+      appendV2(this.db,'WITNESS',payload,taskId);
+      this.db.prepare('INSERT INTO event_outbox(id,task_id,event_type,payload,created_at) VALUES(?,?,?,?,?)').run('sswp:'+id,taskId,'SSWP_ATTESTATION',canonical(payload),new Date().toISOString());
+      return row as AttestationRecord;
+    }).immediate();
   }
 
   private saveGateHistory(attId: string, nodeId: string, g: GateResult) {
@@ -240,42 +231,17 @@ export class RegistryManager {
   // LEDGER
   // ═══════════════════════════════════════════════════════════════
 
-  appendLedger(eventType: string, payload: Record<string, unknown>): void {
-    const last = this.db.prepare("SELECT hash FROM ledger ORDER BY id DESC LIMIT 1").get() as { hash?: string } | undefined;
-    const prev = last?.hash ?? "0";
-    const ts = new Date().toISOString();
-    const payloadJson = JSON.stringify(payload);
-    const hash = createHash("sha256").update(prev + payloadJson + ts).digest("hex");
-
-    const stmt = this.db.prepare("INSERT INTO ledger (prev_hash, event_type, payload, hash) VALUES (?, ?, ?, ?)");
-    stmt.run(prev, eventType, payloadJson, hash);
-  }
-
-  getLedger(limit = 100): LedgerEntry[] {
-    const stmt = this.db.prepare("SELECT * FROM ledger ORDER BY id DESC LIMIT ?");
-    return stmt.all(limit) as LedgerEntry[];
-  }
-
-  verifyLedger(): boolean {
-    const rows = this.db.prepare("SELECT * FROM ledger ORDER BY id").all() as LedgerEntry[];
-    let prev = "0";
-    for (const row of rows) {
-      const expected = createHash("sha256").update(row.prev_hash + row.payload + row.timestamp).digest("hex");
-      if (expected !== row.hash) return false;
-      if (row.prev_hash !== prev) return false;
-      prev = row.hash;
-    }
-    return true;
-  }
-
+  appendLedger(eventType:string,payload:Record<string,unknown>):void {appendV2(this.db,eventType,payload,String(payload.task_id||'system'));}
+  getLedger(limit=100):any[] {return this.db.prepare('SELECT * FROM ledger_v2 ORDER BY id DESC LIMIT ?').all(Math.max(1,Math.min(limit,100)));}
+  verifyLedger():any {return verifyV2(this.db);}
+  flushEvents():void {deliverOutbox(this.db);}
   // ═══════════════════════════════════════════════════════════════
   // DASHBOARD VIEWS
   // ═══════════════════════════════════════════════════════════════
 
-  getHealthBoard(): Array<Record<string, unknown>> {
-    return this.db.prepare("SELECT * FROM v_node_health ORDER BY last_risk DESC").all() as Array<Record<string, unknown>>;
+  getHealthBoard() {
+    return this.db.prepare('WITH ranked AS (SELECT a.*,ROW_NUMBER() OVER(PARTITION BY node_id ORDER BY run_at DESC,attestation_id DESC) rn FROM attestations a) SELECT n.name,n.repo_path,n.status,r.overall_status,r.run_at,r.risk_score FROM nodes n LEFT JOIN ranked r ON r.node_id=n.node_id AND r.rn=1 ORDER BY r.run_at DESC').all().map((r:any)=>({...r,localPathExists:existsSync(r.repo_path),evidenceScope:'historical; check timestamp and source revision before reuse'}));
   }
-
   getRiskLeaderboard(): Array<Record<string, unknown>> {
     return this.db.prepare("SELECT * FROM v_risk_leaderboard").all() as Array<Record<string, unknown>>;
   }

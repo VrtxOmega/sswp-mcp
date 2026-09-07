@@ -1,0 +1,45 @@
+name: SSWP and ecosystem contracts
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  contracts:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: sswp
+      - uses: actions/checkout@v4
+        with:
+          repository: VrtxOmega/omega-brain-mcp
+          path: omega-brain
+      - uses: actions/checkout@v4
+        with:
+          repository: VrtxOmega/omega-stenographer-mcp
+          path: omega-stenographer
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m venv .venv
+      - run: .venv/Scripts/python -m pip install -r omega-brain/requirements.txt
+      - run: npm install -g pnpm@11.19.0
+      - run: pnpm --dir sswp install --frozen-lockfile
+      - run: pnpm --dir sswp check
+      - run: pnpm --dir sswp build
+      - run: git -C sswp diff --exit-code -- dist/sswp.cjs
+      - run: pnpm --dir sswp test
+      - name: Cross-system replay and protocol tests
+        run: |
+          $env:OMEGA_SUITE_ROOT = $PWD.Path
+          .venv/Scripts/python omega-brain/integration-tests/test_runtime.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .venv/Scripts/python omega-brain/integration-tests/test_mcp_flow.py
+        env:
+          PYTHONUTF8: '1'

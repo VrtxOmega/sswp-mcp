@@ -5,3 +5,13 @@ node_modules/
 *.db
 .vscode/
 .idea/
+
+.venv/
+node_modules/
+__pycache__/
+*.pyc
+*.key
+.env
+.env.*
+data/
+.sswp.json

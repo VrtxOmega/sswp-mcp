@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "builder": {
+    "esbuild": "0.28.2",
+    "node": "v24.19.0"
+  },
+  "bundleSha256": "14bf4658a6f42cd59e053e396f745679ed87208b26c49d4bc48de510b5dcf508",
+  "lockSha256": "3eab7a2655081d1604ccffb9efca0b737680bbe4c40a45ca48a7f2be7c446041",
+  "sourceHashes": {
+    "src/registry/schema.sql": "5702b1badeea63ea8e72184623d7264cf2bff05914cb681898f9107c25b7587d",
+    "src/core/source-state.ts": "098b84aae80a6d2111a0497221b4cdd7e719acc214a3984e0ebe3a294ccef053",
+    "src/core/integrity.ts": "91a195c4b5d7dafb2c59cfd822b59d800c8e2dd2230bad3c5270ae564b2b7297",
+    "src/registry/manager.ts": "8c51d662695876c6c396e535dade742f4bbde34506960c3a5af8e868405571b8",
+    "src/core/gate-runner.ts": "8fe6c934e13294006310ba83dd28d0b696e6d263631fd7dc9d53d41407f52a4a",
+    "src/core/witness.ts": "3515c8ca2d10bea822f64b2a9dbb1c0ad7fcd5de708895c3e3ef47d4019c7963",
+    "src/mcp/server.ts": "00dc2deaf3ac847cc9588a5cf5aade136d7d9adf0f4e97e252ed075967d5da20",
+    "src/cli.ts": "43a39b5d46b7b96fb9f2795777a417c912939248a123ccfb2d8e5dad69d8c5a8"
+  },
+  "artifacts": {
+    "sswp.cjs": "14bf4658a6f42cd59e053e396f745679ed87208b26c49d4bc48de510b5dcf508",
+    "sswp-cli.cjs": "400886473db1015745033f23bc0d757d716576162b2f2b4d39d9c2979364ae1b",
+    "witness-test.cjs": "9003bd89484eadde43640c214ee4ca20a9e70f86dc596bc61cb715ce91be7248",
+    "gates-test.cjs": "2f37c6852386dc287549500b0922094697930805b7563260a61cc462a1f9b0bf",
+    "integrity-test.cjs": "69aafbb6af97c31c2662d74507cbb437c209b5b67d24cba2ee8650b0a4c9a0d7",
+    "registry-test.cjs": "1c7c9262fee7ae69adc9536b098e4e3ed7cf38ab2b9343d51518382c5cb539ac",
+    "source-test.cjs": "36d830dfb7967a31121c53d0436fe162ff01140b1ed6943b654a55eeee914bd7"
+  },
+  "identicalBuilds": true,
+  "scope": "Each bundle built twice from identical inputs; independent-directory reproducibility is a separate gate"
+}

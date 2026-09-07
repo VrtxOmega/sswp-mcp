@@ -1,162 +1,49 @@
-// src/sswp/core/witness.ts
-/** SSWP orchestrator — builds, seals, and attests */
+import {existsSync,readFileSync,realpathSync} from 'node:fs';
+import {join,basename} from 'node:path';
+import {randomUUID} from 'node:crypto';
+import {canonical,sha} from './integrity.js';
+import {runGates,runCommand} from './gate-runner.js';
+import {sourceIdentity} from './source-state.js';
+import {parse as parseYaml} from 'yaml';
+import type {SswpAttestation,DependencyEntry,BuildEnvironment} from './types.js';
 
-import { createHash } from 'node:crypto';
-import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
-import { seal } from '../../engine/sealer.js';
-import { scanBuild } from './build-scanner.js';
-import { runGates } from './gate-runner.js';
-import { runAdversarialProbes } from './adversarial-probe.js';
-import type { SswpAttestation, BuildEnvironment } from './types.js';
-
-export async function witness(projectRoot: string): Promise<SswpAttestation> {
-  // Phase 0: Detect project type (polyglot support)
-  const projectType = detectProjectType(projectRoot);
-  const projectName = resolveProjectName(projectRoot, projectType);
-
-  // Phase 1: Scan (skip dependency scan for non-Node static sites)
-  let entries: any[] = [];
-  let env: BuildEnvironment = { nodeVersion: process.version, os: process.platform, arch: process.arch, ci: !!process.env.CI, buildCommand: 'unknown' };
-  let totalPackages = 0;
-  let suspiciousCount = 0;
-
-  if (projectType !== 'html' && existsSync(join(projectRoot, 'package.json'))) {
-    const scan = await scanBuild(projectRoot);
-    entries = scan.entries;
-    env = scan.env;
-    totalPackages = scan.totalPackages;
-    suspiciousCount = scan.suspiciousCount;
-  }
-
-  const scanSeal = seal(
-    { phase: 'SCAN', totalPackages, suspiciousCount, projectType },
-    `Scanned ${totalPackages} packages, ${suspiciousCount} flagged (type: ${projectType})`
-  );
-
-  // Phase 2: Gates
-  const gateResults = await runGates(projectRoot, env);
-  const passedGates = gateResults.filter(g => g.status === 'PASS').length;
-
-  const gateSeal = seal(
-    { phase: 'GATES', passed: passedGates, total: gateResults.length },
-    JSON.stringify(gateResults.map(g => ({ gate: g.gate, status: g.status })))
-  );
-
-  // Phase 3: Adversarial (only for Node repos with deps)
-  let adversarial = { totalPackages: 0, suspiciousPackages: 0, probes: [], overallRisk: 0 };
-  if (entries.length > 0) {
-    adversarial = await runAdversarialProbes(entries);
-  }
-
-  const advSeal = seal(
-    { phase: 'ADVERSARIAL', overallRisk: adversarial.overallRisk, probes: adversarial.probes.length },
-    JSON.stringify(adversarial)
-  );
-
-  // Phase 4: Attest
-  const gitHash = execGit(projectRoot, ['rev-parse', 'HEAD']);
-  const branch = execGit(projectRoot, ['rev-parse', '--abbrev-ref', 'HEAD']);
-
-  const attestation: SswpAttestation = {
-    version: '1.1.0',
-    timestamp: new Date().toISOString(),
-    projectType,
-    target: {
-      name: projectName,
-      repo: projectRoot,
-      commitHash: gitHash || 'unknown',
-      branch: branch || 'unknown',
-    },
-    environment: {
-      nodeVersion: env.nodeVersion,
-      os: env.os,
-      arch: env.arch,
-      ci: env.ci,
-    },
-    dependencies: entries,
-    gates: gateResults,
-    adversarial,
-    seal: {
-      chainHash: scanSeal.hash,
-      sequence: (gateSeal?.sequence ?? 0) + (advSeal?.sequence ?? 0),
-    },
-    signature: '',
-  };
-
-  const { signature, ...hashPayload } = attestation;
-  attestation.signature = createHash('sha256').update(JSON.stringify(hashPayload, Object.keys(hashPayload).sort())).digest('hex');
-
-  const finalSeal = seal(
-    { phase: 'ATTEST', signature: attestation.signature },
-    'Attestation sealed and signed'
-  );
-
-  return attestation;
-}
-
-// ── Polyglot helpers ──
-
-function detectProjectType(root: string): string {
-  if (existsSync(join(root, 'package.json'))) return 'node';
-  if (existsSync(join(root, 'requirements.txt')) || existsSync(join(root, 'pyproject.toml')) || existsSync(join(root, 'setup.py'))) return 'python';
-  if (existsSync(join(root, 'go.mod'))) return 'go';
-  if (existsSync(join(root, 'Cargo.toml'))) return 'rust';
-  if (existsSync(join(root, 'index.html'))) return 'html';
-  return 'unknown';
-}
-
-function resolveProjectName(root: string, projectType: string): string {
-  try {
-    if (projectType === 'node') {
-      const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
-      return pkg.name || root.split('/').pop() || 'unknown';
+export function dependencyInventory(root:string):{entries:DependencyEntry[],scope:string} {
+  const lock=join(root,'package-lock.json');
+  if(!existsSync(lock)){
+    const pnpm=join(root,'pnpm-lock.yaml');
+    if(existsSync(pnpm)){
+      const data=parseYaml(readFileSync(pnpm,'utf8')),entries:DependencyEntry[]=[];
+      for(const [key,value] of Object.entries(data.packages||{})){const p=value as any,at=key.lastIndexOf('@');entries.push({name:at>0?key.slice(0,at):key,version:at>0?key.slice(at+1):'unknown',resolved:p.resolution?.tarball||key,integrity:p.resolution?.integrity||null,suspicious:!p.resolution?.integrity,riskScore:0});}
+      return {entries,scope:'pnpm lock package entries including transitive packages; declared integrity, not independently verified installed bytes'};
     }
-    if (projectType === 'python') {
-      if (existsSync(join(root, 'pyproject.toml'))) {
-        const toml = readFileSync(join(root, 'pyproject.toml'), 'utf8');
-        const match = toml.match(/name\s*=\s*"(.+)"/);
-        if (match) return match[1];
-      }
-    }
-    if (projectType === 'go') {
-      const gomod = readFileSync(join(root, 'go.mod'), 'utf8');
-      const match = gomod.match(/module\s+(.+)/);
-      if (match) return match[1].split('/').pop() || match[1];
-    }
-  } catch {}
-  return root.split('/').pop() || 'unknown';
-}
-
-function execGit(cwd: string, args: string[]): string {
-  const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
-  return r.stdout?.trim() || '';
-}
-
-export function formatAttestation(att: SswpAttestation): string {
-  const lines: string[] = [];
-  lines.push(`\u2b21  SSWP ATTESTATION v${att.version}`);
-  lines.push(`   Target: ${att.target.name} (${att.target.commitHash.slice(0, 8)})`);
-  lines.push(`   Branch: ${att.target.branch} | Env: ${att.environment.os}-${att.environment.arch}`);
-  lines.push(`   Built: ${att.timestamp}`);
-  lines.push('');
-  lines.push('   GATES:');
-  for (const g of att.gates) {
-    const icon = g.status === 'PASS' ? '\u2713' : g.status === 'FAIL' ? '\u2717' : '\u25cb';
-    lines.push(`     ${icon} ${g.gate.padEnd(22)} ${g.status.padEnd(14)} ${g.durationMs}ms`);
+    return {entries:[],scope:'No supported npm/pnpm lockfile; dependency coverage unverified'};
   }
-  lines.push('');
-  lines.push(`   DEPENDENCIES: ${att.dependencies.length} total, ${att.adversarial.suspiciousPackages} flagged`);
-  lines.push(`   ADVERSARIAL RISK: ${(att.adversarial.overallRisk * 100).toFixed(1)}%`);
-  lines.push(`   SEAL: ${att.signature.slice(0, 16)}...`);
-  return lines.join('\n');
+  const data=JSON.parse(readFileSync(lock,'utf8'));const entries:DependencyEntry[]=[];
+  for(const [location,value] of Object.entries(data.packages||{})){
+    if(!location)continue;const p=value as any;
+    entries.push({name:p.name||location.split('node_modules/').pop()||location,version:p.version||'unknown',resolved:p.resolved||location,integrity:p.integrity||null,suspicious:!p.integrity&&!p.link,riskScore:0});
+  }
+  return {entries,scope:'npm lockfile package entries; integrity fields are declared metadata, not independently verified installed bytes'};
 }
-
-export function verifyAttestation(filePath: string): boolean {
-  const att = JSON.parse(readFileSync(filePath, 'utf8'));
-  const { signature, ...hashPayload } = att;
-  const payload = JSON.stringify(hashPayload, Object.keys(hashPayload).sort());
-  const computed = createHash('sha256').update(payload).digest('hex');
-  return computed === att.signature;
+export async function witness(root:string,policy:any={},taskId='unscoped'):Promise<SswpAttestation> {
+  root=realpathSync(root);const inventory=dependencyInventory(root);
+  const sourceBefore=sourceIdentity(root);
+  const env:BuildEnvironment={cwd:root,nodeVersion:process.version,os:process.platform,arch:process.arch,ci:!!process.env.CI,buildCommand:'operator-profile',buildOutput:''};
+  const before=await runCommand('git',['rev-parse','HEAD'],root,10000);
+  const gates=await runGates(root,env,policy);
+  const after=await runCommand('git',['rev-parse','HEAD'],root,10000);
+  const sourceAfter=sourceIdentity(root);
+  if(sourceBefore!==sourceAfter)gates.push({gate:'SOURCE_BYTES',status:'FAIL',evidence:'Source bytes changed while checks ran',durationMs:0});
+  if(before.status!==0||after.status!==0||before.stdout!==after.stdout)gates.push({gate:'SOURCE_REVISION','status':'ERROR',evidence:'Cannot establish one stable Git revision across the checks',durationMs:0});
+  const att:any={id:randomUUID(),version:'2.1.0',signatureAlgorithm:'sha256-canonical-json-v2',timestamp:new Date().toISOString(),taskId,target:{name:basename(root),repo:root,commitHash:before.status===0?before.stdout.trim():'unknown',branch:'recorded-by-commit'},environment:{nodeVersion:env.nodeVersion,os:env.os,arch:env.arch,ci:env.ci},dependencies:inventory.entries,dependencyCoverage:inventory.scope,gates,adversarial:{totalPackages:inventory.entries.length,suspiciousPackages:inventory.entries.filter(d=>d.suspicious).length,probes:[],overallRisk:0,assessment:'NOT_PERFORMED; zero is not a safety probability'},seal:{chainHash:'assigned-by-persistent-registry',sequence:0}};
+  att.source={before:sourceBefore,after:sourceAfter,scope:'Source tree; installed dependencies and runtime are host-trusted'};
+  att.adversarial.probes=inventory.entries.map(d=>({package:d.name,probe:'LOCK_METADATA',result:!d.integrity?'INCONCLUSIVE':'PASS',detail:!d.integrity?'No integrity declaration':'Integrity declaration present; installed bytes and vulnerabilities not checked'}));
+  att.adversarial.assessment='Local metadata probes only; no adversarial execution or vulnerability feed consulted';
+  att.signature=sha(canonical(att));return att;
 }
+export function verifyAttestation(filePath:string):boolean {
+  const att=JSON.parse(readFileSync(filePath,'utf8'));
+  if(att.signatureAlgorithm!=='sha256-canonical-json-v2')return false;
+  const {signature,...payload}=att;return typeof signature==='string'&&sha(canonical(payload))===signature;
+}
+export const formatAttestation=(att:SswpAttestation)=>JSON.stringify(att,null,2);
