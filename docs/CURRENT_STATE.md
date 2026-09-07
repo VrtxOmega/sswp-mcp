@@ -1,5 +1,7 @@
 # Current operating contract — September 2026
 
+The optional Datadog workflow runs automatically only when `DATADOG_SYNTHETICS_ENABLED=true` is configured as a repository variable. It requires the existing `DD_API_KEY` and `DD_APP_KEY` secrets. Manual workflow dispatch is also available. Core MCP verification does not depend on Datadog.
+
 This release addresses reproduced correctness and recovery failures in the standalone MCP deployment. It changes tool contracts; older unscoped calls must be updated.
 
 | Component | Responsibility | Verified boundary |

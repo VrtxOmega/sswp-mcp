@@ -14,6 +14,7 @@
 name: Run Datadog Synthetic tests
 
 on:
+  workflow_dispatch:
   push:
     branches: [ "main" ]
   pull_request:
@@ -21,6 +22,7 @@ on:
 
 jobs:
   build:
+    if: ${{ vars.DATADOG_SYNTHETICS_ENABLED == 'true' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
 
     steps:
