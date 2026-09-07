@@ -44,31 +44,80 @@ var import_node_os = require("node:os");
 var import_node_crypto = require("node:crypto");
 var import_node_fs = require("node:fs");
 var import_node_path = require("node:path");
-var excluded = /* @__PURE__ */ new Set([".git", "node_modules", ".venv", "data", "__pycache__", ".sswp.json"]);
+var import_node_child_process = require("node:child_process");
+var excluded = /* @__PURE__ */ new Set([".git", "node_modules", ".venv", "__pycache__", ".sswp.json"]);
+function gitFiles(root, mode) {
+  const args = ["-C", root, "ls-files", mode, "-z"];
+  if (mode === "--others") args.push("--exclude-standard");
+  args.push("--");
+  const result2 = (0, import_node_child_process.spawnSync)("git", args, { env: { ...process.env, LC_ALL: "C" }, timeout: 1e4, maxBuffer: 16 * 1024 * 1024, windowsHide: true });
+  if (result2.error) {
+    if (result2.error.code === "ENOENT") return null;
+    throw Error("Cannot enumerate source inputs: " + result2.error.message);
+  }
+  if (result2.status !== 0) {
+    const error = result2.stderr?.toString("utf8") || "Git source enumeration failed";
+    if (error.toLowerCase().includes("not a git repository")) return null;
+    throw Error("Cannot enumerate source inputs: " + error);
+  }
+  return new TextDecoder("utf-8", { fatal: true }).decode(result2.stdout).split("\0").filter(Boolean);
+}
 function sourceFiles(root) {
+  root = (0, import_node_fs.realpathSync)(root);
+  const tracked = gitFiles(root, "--cached");
+  const candidates = /* @__PURE__ */ new Set();
+  if (tracked !== null) {
+    const other = gitFiles(root, "--others");
+    if (other === null) throw Error("Git source enumeration became unavailable");
+    for (const name2 of tracked) candidates.add(name2);
+    for (const name2 of other) if (!name2.split("/").some((part) => excluded.has(part))) candidates.add(name2);
+  } else {
+    const walk = (folder) => {
+      for (const name2 of (0, import_node_fs.readdirSync)(folder)) {
+        if (excluded.has(name2)) continue;
+        const path = (0, import_node_path.join)(folder, name2), stat = (0, import_node_fs.lstatSync)(path);
+        if (stat.isSymbolicLink()) throw Error("Source symlinks require an explicit packaged source snapshot");
+        if (stat.isDirectory()) walk(path);
+        else if (stat.isFile()) candidates.add((0, import_node_path.relative)(root, path).replaceAll("\\", "/"));
+      }
+    };
+    walk(root);
+  }
   const result2 = [];
-  const walk = (folder) => {
-    for (const name2 of (0, import_node_fs.readdirSync)(folder)) {
-      if (excluded.has(name2)) continue;
-      const p = (0, import_node_path.join)(folder, name2), s = (0, import_node_fs.lstatSync)(p);
-      if (s.isSymbolicLink()) throw Error("Source symlinks require an explicit packaged source snapshot");
-      if (s.isDirectory()) walk(p);
-      else if (s.isFile()) result2.push((0, import_node_path.relative)(root, p).replaceAll("\\", "/"));
+  for (const name2 of [...candidates].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)))) {
+    const parts = name2.split("/");
+    if ((0, import_node_path.isAbsolute)(name2) || parts.includes("..")) throw Error("Source path escapes the approved root");
+    let path = root, missing = false;
+    for (const part of parts) {
+      path = (0, import_node_path.join)(path, part);
+      try {
+        if ((0, import_node_fs.lstatSync)(path).isSymbolicLink()) throw Error("Source symlinks require an explicit packaged source snapshot");
+      } catch (error) {
+        if (["ENOENT", "ENOTDIR"].includes(error.code || "")) {
+          missing = true;
+          break;
+        }
+        throw error;
+      }
     }
-  };
-  walk(root);
-  return result2.sort();
+    if (missing) continue;
+    const stat = (0, import_node_fs.lstatSync)(path);
+    if (stat.isFile()) result2.push(name2);
+    else if (stat.isDirectory()) throw Error("Tracked directories/submodules require an explicit packaged source snapshot");
+    else throw Error("Unsupported source file type");
+  }
+  return result2;
 }
 function sourceIdentity(root) {
   const hash = (0, import_node_crypto.createHash)("sha256");
-  for (const f of sourceFiles(root)) hash.update(f + "\0" + (0, import_node_crypto.createHash)("sha256").update((0, import_node_fs.readFileSync)((0, import_node_path.join)(root, f))).digest("hex") + "\n");
+  for (const name2 of sourceFiles(root)) hash.update(name2 + "\0" + (0, import_node_crypto.createHash)("sha256").update((0, import_node_fs.readFileSync)((0, import_node_path.join)(root, name2))).digest("hex") + "\n");
   return hash.digest("hex");
 }
 function copySources(root, dest) {
-  for (const f of sourceFiles(root)) {
-    const target = (0, import_node_path.join)(dest, f);
+  for (const name2 of sourceFiles(root)) {
+    const target = (0, import_node_path.join)(dest, name2);
     (0, import_node_fs.mkdirSync)((0, import_node_path.dirname)(target), { recursive: true });
-    (0, import_node_fs.copyFileSync)((0, import_node_path.join)(root, f), target);
+    (0, import_node_fs.copyFileSync)((0, import_node_path.join)(root, name2), target);
   }
 }
 
@@ -133,7 +182,14 @@ function consumeApproval(tool, args, receipt, taskId) {
   const shared = sharedPath(), policyBytes = (0, import_node_fs2.readFileSync)((0, import_node_path2.join)(shared, "operator-policy.json")), policy = JSON.parse(policyBytes.toString());
   const real = (0, import_node_fs2.realpathSync)(args.repoPath).replaceAll("\\", "/");
   const pathkey = (p2) => process.platform === "win32" ? p2.toLowerCase() : p2;
-  const allowed = (policy.witness_roots || []).map((p2) => pathkey((0, import_node_fs2.realpathSync)(p2).replaceAll("\\", "/")));
+  const allowed = (policy.witness_roots || []).flatMap((p2) => {
+    try {
+      return [pathkey((0, import_node_fs2.realpathSync)(p2).replaceAll("\\", "/"))];
+    } catch (error) {
+      if (["ENOENT", "ENOTDIR", "EACCES", "EPERM"].includes(error.code || "")) return [];
+      throw error;
+    }
+  });
   if (!allowed.includes(pathkey(real))) throw Error("Project is not registered in operator policy");
   const key = (0, import_node_fs2.readFileSync)((0, import_node_path2.join)(shared, "approval.key")), expected = (0, import_node_crypto2.createHmac)("sha256", key).update(canonical(receipt.payload)).digest();
   const actual = Buffer.from(receipt.mac, "hex");
@@ -456,14 +512,14 @@ var import_node_path5 = require("node:path");
 var import_node_crypto5 = require("node:crypto");
 
 // src/core/gate-runner.ts
-var import_node_child_process = require("node:child_process");
+var import_node_child_process2 = require("node:child_process");
 var import_node_fs4 = require("node:fs");
 var import_node_path4 = require("node:path");
 var import_node_os2 = require("node:os");
 var import_node_crypto4 = require("node:crypto");
 async function runCommand(command, args, cwd, timeout = 6e4, env = {}) {
   return new Promise((resolve5) => {
-    const child = (0, import_node_child_process.spawn)(command, args, { cwd, shell: false, windowsHide: true, detached: process.platform !== "win32", env: { ...process.env, ...env } });
+    const child = (0, import_node_child_process2.spawn)(command, args, { cwd, shell: false, windowsHide: true, detached: process.platform !== "win32", env: { ...process.env, ...env } });
     let stdout = "", stderr = "", settled = false, timedOut = false;
     const finish = (value) => {
       if (!settled) {
@@ -475,7 +531,7 @@ async function runCommand(command, args, cwd, timeout = 6e4, env = {}) {
     const timer = setTimeout(() => {
       timedOut = true;
       if (process.platform === "win32" && child.pid) {
-        const killer = (0, import_node_child_process.spawn)("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true });
+        const killer = (0, import_node_child_process2.spawn)("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true });
         killer.on("error", () => child.kill());
       } else if (child.pid) {
         try {

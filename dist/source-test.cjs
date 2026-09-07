@@ -29,31 +29,80 @@ module.exports = __toCommonJS(source_state_exports);
 var import_node_crypto = require("node:crypto");
 var import_node_fs = require("node:fs");
 var import_node_path = require("node:path");
-var excluded = /* @__PURE__ */ new Set([".git", "node_modules", ".venv", "data", "__pycache__", ".sswp.json"]);
+var import_node_child_process = require("node:child_process");
+var excluded = /* @__PURE__ */ new Set([".git", "node_modules", ".venv", "__pycache__", ".sswp.json"]);
+function gitFiles(root, mode) {
+  const args = ["-C", root, "ls-files", mode, "-z"];
+  if (mode === "--others") args.push("--exclude-standard");
+  args.push("--");
+  const result = (0, import_node_child_process.spawnSync)("git", args, { env: { ...process.env, LC_ALL: "C" }, timeout: 1e4, maxBuffer: 16 * 1024 * 1024, windowsHide: true });
+  if (result.error) {
+    if (result.error.code === "ENOENT") return null;
+    throw Error("Cannot enumerate source inputs: " + result.error.message);
+  }
+  if (result.status !== 0) {
+    const error = result.stderr?.toString("utf8") || "Git source enumeration failed";
+    if (error.toLowerCase().includes("not a git repository")) return null;
+    throw Error("Cannot enumerate source inputs: " + error);
+  }
+  return new TextDecoder("utf-8", { fatal: true }).decode(result.stdout).split("\0").filter(Boolean);
+}
 function sourceFiles(root) {
+  root = (0, import_node_fs.realpathSync)(root);
+  const tracked = gitFiles(root, "--cached");
+  const candidates = /* @__PURE__ */ new Set();
+  if (tracked !== null) {
+    const other = gitFiles(root, "--others");
+    if (other === null) throw Error("Git source enumeration became unavailable");
+    for (const name of tracked) candidates.add(name);
+    for (const name of other) if (!name.split("/").some((part) => excluded.has(part))) candidates.add(name);
+  } else {
+    const walk = (folder) => {
+      for (const name of (0, import_node_fs.readdirSync)(folder)) {
+        if (excluded.has(name)) continue;
+        const path = (0, import_node_path.join)(folder, name), stat = (0, import_node_fs.lstatSync)(path);
+        if (stat.isSymbolicLink()) throw Error("Source symlinks require an explicit packaged source snapshot");
+        if (stat.isDirectory()) walk(path);
+        else if (stat.isFile()) candidates.add((0, import_node_path.relative)(root, path).replaceAll("\\", "/"));
+      }
+    };
+    walk(root);
+  }
   const result = [];
-  const walk = (folder) => {
-    for (const name of (0, import_node_fs.readdirSync)(folder)) {
-      if (excluded.has(name)) continue;
-      const p = (0, import_node_path.join)(folder, name), s = (0, import_node_fs.lstatSync)(p);
-      if (s.isSymbolicLink()) throw Error("Source symlinks require an explicit packaged source snapshot");
-      if (s.isDirectory()) walk(p);
-      else if (s.isFile()) result.push((0, import_node_path.relative)(root, p).replaceAll("\\", "/"));
+  for (const name of [...candidates].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)))) {
+    const parts = name.split("/");
+    if ((0, import_node_path.isAbsolute)(name) || parts.includes("..")) throw Error("Source path escapes the approved root");
+    let path = root, missing = false;
+    for (const part of parts) {
+      path = (0, import_node_path.join)(path, part);
+      try {
+        if ((0, import_node_fs.lstatSync)(path).isSymbolicLink()) throw Error("Source symlinks require an explicit packaged source snapshot");
+      } catch (error) {
+        if (["ENOENT", "ENOTDIR"].includes(error.code || "")) {
+          missing = true;
+          break;
+        }
+        throw error;
+      }
     }
-  };
-  walk(root);
-  return result.sort();
+    if (missing) continue;
+    const stat = (0, import_node_fs.lstatSync)(path);
+    if (stat.isFile()) result.push(name);
+    else if (stat.isDirectory()) throw Error("Tracked directories/submodules require an explicit packaged source snapshot");
+    else throw Error("Unsupported source file type");
+  }
+  return result;
 }
 function sourceIdentity(root) {
   const hash = (0, import_node_crypto.createHash)("sha256");
-  for (const f of sourceFiles(root)) hash.update(f + "\0" + (0, import_node_crypto.createHash)("sha256").update((0, import_node_fs.readFileSync)((0, import_node_path.join)(root, f))).digest("hex") + "\n");
+  for (const name of sourceFiles(root)) hash.update(name + "\0" + (0, import_node_crypto.createHash)("sha256").update((0, import_node_fs.readFileSync)((0, import_node_path.join)(root, name))).digest("hex") + "\n");
   return hash.digest("hex");
 }
 function copySources(root, dest) {
-  for (const f of sourceFiles(root)) {
-    const target = (0, import_node_path.join)(dest, f);
+  for (const name of sourceFiles(root)) {
+    const target = (0, import_node_path.join)(dest, name);
     (0, import_node_fs.mkdirSync)((0, import_node_path.dirname)(target), { recursive: true });
-    (0, import_node_fs.copyFileSync)((0, import_node_path.join)(root, f), target);
+    (0, import_node_fs.copyFileSync)((0, import_node_path.join)(root, name), target);
   }
 }
 // Annotate the CommonJS export names for ESM import in node:
