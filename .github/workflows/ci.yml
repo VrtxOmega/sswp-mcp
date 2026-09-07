@@ -9,18 +9,26 @@ permissions:
 jobs:
   contracts:
     runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@v4
         with:
           path: sswp
+          persist-credentials: false
       - uses: actions/checkout@v4
         with:
           repository: VrtxOmega/omega-brain-mcp
+          ref: 7f2a41b9bc268eaea2947f0eb1db67b3a7e2e3aa
           path: omega-brain
+          persist-credentials: false
       - uses: actions/checkout@v4
         with:
           repository: VrtxOmega/omega-stenographer-mcp
+          ref: bc911633bc8af2a29ef19073c491de6059d003da
           path: omega-stenographer
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -32,8 +40,13 @@ jobs:
       - run: npm install -g pnpm@11.19.0
       - run: pnpm --dir sswp install --frozen-lockfile
       - run: pnpm --dir sswp check
+      - name: Verify the committed source and complete artifact receipt before rebuilding
+        run: node sswp/scripts/verify-build-receipt.cjs
       - run: pnpm --dir sswp build
-      - run: git -C sswp diff --exit-code -- dist/sswp.cjs
+      - name: Verify the rebuilt receipt
+        run: node sswp/scripts/verify-build-receipt.cjs
+      - name: Reject drift in any shipped bundle
+        run: git -C sswp diff --exit-code -- dist/sswp.cjs dist/sswp-cli.cjs dist/witness-test.cjs dist/gates-test.cjs dist/integrity-test.cjs dist/registry-test.cjs dist/source-test.cjs
       - run: pnpm --dir sswp test
       - name: Cross-system replay and protocol tests
         run: |
@@ -41,5 +54,4 @@ jobs:
           .venv/Scripts/python omega-brain/integration-tests/test_runtime.py
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           .venv/Scripts/python omega-brain/integration-tests/test_mcp_flow.py
-        env:
-          PYTHONUTF8: '1'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
